@@ -250,49 +250,125 @@ client.once('ready', async () => {
   console.log(`   Main guild  : ${process.env.MAIN_GUILD_ID}`);
   console.log(`   Staff guild : ${process.env.STAFF_GUILD_ID}`);
 
-  // Auto-post the ticket panel if PANEL_CHANNEL_ID is set
+  // Auto-post the ticket panel in the main server
   const panelChannelId = process.env.PANEL_CHANNEL_ID;
-  if (!panelChannelId) return;
+  if (panelChannelId) {
+    try {
+      const channel = await client.channels.fetch(panelChannelId);
+      if (channel) {
+        const recent = await channel.messages.fetch({ limit: 20 });
+        const existing = recent.find(m => m.author.id === client.user.id && m.components?.length > 0);
+        if (existing) {
+          console.log(`ℹ️  Ticket panel already exists in #${channel.name} — skipping re-post.`);
+        } else {
+          const embed = makeEmbed({
+            color: Colors.Blurple,
+            title: '🎫 Support Tickets',
+            description: [
+              'Need help? Click the button below to open a ticket.',
+              '',
+              'A staff member will reply to you via **Direct Message**.',
+              'Please make sure your DMs are open!',
+            ].join('\n'),
+            footer: 'One ticket per user at a time.',
+          });
+          const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId('open_ticket_panel')
+              .setLabel('Open a Ticket')
+              .setStyle(ButtonStyle.Primary)
+              .setEmoji('🎫')
+          );
+          await channel.send({ embeds: [embed], components: [row] });
+          console.log(`✅ Ticket panel posted in #${channel.name}`);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to post ticket panel:', err.message);
+    }
+  }
 
+  // Auto-create/update the staff guide channel in the staff server
   try {
-    const channel = await client.channels.fetch(panelChannelId);
-    if (!channel) return console.warn('⚠️  PANEL_CHANNEL_ID channel not found.');
+    const staffGuild = getStaffGuild();
+    if (!staffGuild) throw new Error('Staff guild not found');
 
-    // Check if the bot already has a panel message in that channel
-    const recent = await channel.messages.fetch({ limit: 20 });
-    const existing = recent.find(
-      m => m.author.id === client.user.id && m.components?.length > 0
+    let guideChannel = staffGuild.channels.cache.find(
+      c => c.type === ChannelType.GuildText && c.name === '📋-staff-guide'
     );
-
-    if (existing) {
-      console.log(`ℹ️  Ticket panel already exists in #${channel.name} — skipping re-post.`);
-      return;
+    if (!guideChannel) {
+      guideChannel = await staffGuild.channels.create({
+        name: '📋-staff-guide',
+        type: ChannelType.GuildText,
+        topic: 'Staff commands and quick reply reference guide.',
+        permissionOverwrites: [
+          { id: staffGuild.roles.everyone, deny: [PermissionFlagsBits.SendMessages], allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] },
+          { id: client.user.id, allow: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ViewChannel] },
+        ],
+      });
+      console.log('✅ Created #📋-staff-guide channel');
     }
 
-    const embed = makeEmbed({
+    // Delete old bot messages and repost fresh
+    const old = await guideChannel.messages.fetch({ limit: 20 });
+    const botMsgs = old.filter(m => m.author.id === client.user.id);
+    for (const msg of botMsgs.values()) await msg.delete().catch(() => {});
+
+    // ── Embed 1: Commands ──
+    const commandsEmbed = makeEmbed({
       color: Colors.Blurple,
-      title: '🎫 Support Tickets',
+      title: '⌨️ Staff Commands',
       description: [
-        'Need help? Click the button below to open a ticket.',
+        'All commands are used inside ticket channels in this server unless stated otherwise.',
         '',
-        'A staff member will reply to you via **Direct Message**.',
-        'Please make sure your DMs are open!',
+        '`/qr` — Send a quick reply to the user (dropdown menu)',
+        '`/transfer` — Move the ticket to a specific department',
+        '`/close` — Close the ticket and notify the user',
+        '`/reopen` — Reopen a closed ticket',
+        '`/tickets` — List all currently open tickets',
+        '',
+        '**Main Server Only:**',
+        '`/ticket <subject>` — Open a ticket (users)',
+        '`/setup` — Post the ticket panel button in a channel (staff)',
+        '',
+        '**Replying to users:**',
+        '> Type `%` before your message to send it to the user via DM',
+        '> e.g. `%Hello! How can I help you today?`',
+        '> Any message **without** `%` is an internal staff note — the user **will not** see it.',
       ].join('\n'),
-      footer: 'One ticket per user at a time.',
     });
 
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('open_ticket_panel')
-        .setLabel('Open a Ticket')
-        .setStyle(ButtonStyle.Primary)
-        .setEmoji('🎫')
-    );
+    // ── Embed 2: Quick Replies ──
+    const qrLines = QUICK_REPLIES.map(qr => `**${qr.label}**\n> ${qr.message}`);
+    const qrEmbed = makeEmbed({
+      color: Colors.Green,
+      title: '⚡ Quick Replies  —  `/qr`',
+      description: qrLines.join('\n\n'),
+      footer: 'Edit quick-replies.json to add or change these.',
+    });
 
-    await channel.send({ embeds: [embed], components: [row] });
-    console.log(`✅ Ticket panel posted in #${channel.name}`);
+    // ── Embed 3: Departments ──
+    const deptLines = [...DEPARTMENTS].reverse().map((d, i) =>
+      `${i === 0 ? '👑 ' : ''}**${d.emoji} ${d.name}** — <@&${d.roleId}>`
+    );
+    const deptEmbed = makeEmbed({
+      color: Colors.Yellow,
+      title: '🏢 Departments  —  `/transfer`',
+      description: [
+        'Use `/transfer` inside a ticket to move it to a department.',
+        'Only that department (and Management) will be able to see the channel.',
+        '',
+        ...deptLines,
+      ].join('\n'),
+      footer: 'Management always has access to all tickets.',
+    });
+
+    await guideChannel.send({ embeds: [commandsEmbed] });
+    await guideChannel.send({ embeds: [qrEmbed] });
+    await guideChannel.send({ embeds: [deptEmbed] });
+    console.log('✅ Staff guide updated in #📋-staff-guide');
   } catch (err) {
-    console.error('Failed to post ticket panel:', err.message);
+    console.error('Failed to post staff guide:', err.message);
   }
 });
 
