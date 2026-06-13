@@ -149,7 +149,10 @@ async function createStaffChannel(ticket) {
   const guild = getStaffGuild();
   if (!guild) throw new Error('Staff guild not found — check STAFF_GUILD_ID in .env');
 
-  const category = await getUnassignedCategory(guild);
+  // New tickets land in Community Assistant by default
+  const defaultDept = DEPARTMENTS.find(d => d.id === 'community_assistant');
+  const category = await getDeptCategory(guild, defaultDept);
+
   const channelName = `ticket-${String(ticket.id).padStart(4, '0')}-${ticket.username
     .replace(/[^a-z0-9]/gi, '')
     .toLowerCase()
@@ -159,8 +162,8 @@ async function createStaffChannel(ticket) {
     name: channelName,
     type: ChannelType.GuildText,
     parent: category.id,
-    topic: `Ticket #${ticket.id} | User: ${ticket.username} (${ticket.userId}) | Status: open | Dept: Unassigned`,
-    permissionOverwrites: buildPermissionOverwrites(guild),
+    topic: `Ticket #${ticket.id} | User: ${ticket.username} (${ticket.userId}) | Status: open | Dept: Community Assistant Team`,
+    permissionOverwrites: buildPermissionOverwrites(guild, defaultDept.roleId),
   });
 
   return channel;
@@ -180,6 +183,7 @@ async function openTicket(user, subject) {
   }
 
   const ticket = db.createTicket(user.id, user.username);
+  db.setTicketDepartment(ticket.id, 'community_assistant');
 
   let staffChannel;
   try {
@@ -222,7 +226,7 @@ async function openTicket(user, subject) {
     color: Colors.Green,
     title: '🎫 Ticket Opened',
     description: [
-      `Your ticket **#${ticket.id}** has been opened.`,
+      `Your ticket has been opened.`,
       '',
       `**Subject:** ${subject}`,
       '',
@@ -341,8 +345,8 @@ client.on('interactionCreate', async interaction => {
       }
 
       const msg = result.dmSent
-        ? `✅ Ticket **#${result.ticket.id}** opened! Check your DMs for confirmation.`
-        : `✅ Ticket **#${result.ticket.id}** opened! I couldn't DM you — please enable DMs from server members.`;
+        ? `✅ Ticket opened! Check your DMs for confirmation.`
+        : `✅ Ticket opened! I couldn't DM you — please enable DMs from server members.`;
 
       return interaction.editReply({ content: msg });
     }
@@ -361,7 +365,7 @@ client.on('interactionCreate', async interaction => {
       const userEmbed = makeEmbed({
         color: Colors.Red,
         title: '🔒 Ticket Closed',
-        description: `Your ticket **#${ticket.id}** has been closed by staff.\n\nIf you need further help, open a new ticket.`,
+        description: `Your ticket has been closed by staff.\n\nIf you need further help, open a new ticket.`,
       });
       await tryDM(ticket.userId, { embeds: [userEmbed] });
 
@@ -395,7 +399,7 @@ client.on('interactionCreate', async interaction => {
       const userEmbed = makeEmbed({
         color: Colors.Green,
         title: '🔓 Ticket Reopened',
-        description: `Your ticket **#${ticket.id}** has been reopened by staff.\n\nFeel free to continue the conversation by DMing me.`,
+        description: `Your ticket has been reopened by staff.\n\nFeel free to continue the conversation by DMing me.`,
       });
       await tryDM(ticket.userId, { embeds: [userEmbed] });
 
@@ -491,8 +495,8 @@ client.on('interactionCreate', async interaction => {
       }
 
       const msg = result.dmSent
-        ? `✅ Ticket **#${result.ticket.id}** opened! Check your DMs.`
-        : `✅ Ticket **#${result.ticket.id}** opened! I couldn't DM you — please enable DMs from server members.`;
+        ? `✅ Ticket opened! Check your DMs.`
+        : `✅ Ticket opened! I couldn't DM you — please enable DMs from server members.`;
 
       return interaction.editReply({ content: msg });
     }
@@ -511,7 +515,7 @@ client.on('interactionCreate', async interaction => {
       const userEmbed = makeEmbed({
         color: Colors.Red,
         title: '🔒 Ticket Closed',
-        description: `Your ticket **#${ticket.id}** has been closed.\n\nIf you need further help, open a new ticket.`,
+        description: `Your ticket has been closed.\n\nIf you need further help, open a new ticket.`,
       });
       await tryDM(ticket.userId, { embeds: [userEmbed] });
 
