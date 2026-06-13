@@ -1,0 +1,51 @@
+[
+  {
+    "id": "community_assistant",
+    "name": "Community Assistant Team",
+    "emoji": "👥",
+    "roleId": "1515309085736570892",
+    "color": 5793266
+  },
+  {
+    "id": "moderation",
+    "name": "Moderation Team",
+    "emoji": "🛡️",
+    "roleId": "1515309081487740948",
+    "color": 3447003
+  },
+  {
+    "id": "police",
+    "name": "Police Team",
+    "emoji": "🚔",
+    "roleId": "1515309997251366982",
+    "color": 3426654
+  },
+  {
+    "id": "gang",
+    "name": "Gang Team",
+    "emoji": "🔫",
+    "roleId": "1515310098170384444",
+    "color": 15158332
+  },
+  {
+    "id": "developer",
+    "name": "Developer Team",
+    "emoji": "💻",
+    "roleId": "1515309570153644104",
+    "color": 10181046
+  },
+  {
+    "id": "admin",
+    "name": "Admin Team",
+    "emoji": "⚙️",
+    "roleId": "1515309068200185866",
+    "color": 15548997
+  },
+  {
+    "id": "management",
+    "name": "Management Team",
+    "emoji": "⭐",
+    "roleId": "1515309451727470794",
+    "color": 16776960
+  }
+]

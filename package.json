@@ -1,0 +1,14 @@
+{
+  "name": "ticket-bot",
+  "version": "1.0.0",
+  "description": "Discord ticket bot with DM relay and staff reply system",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "deploy": "node deploy-commands.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5"
+  }
+}
