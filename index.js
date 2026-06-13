@@ -196,6 +196,16 @@ async function openTicket(user, subject) {
 
   db.setTicketChannel(ticket.id, staffChannel.id);
 
+  // Auto-send the hello message to the user
+  const member = staffChannel.guild.members.me;
+  const autoEmbed = makeEmbed({
+    color: Colors.Blurple,
+    description: 'Hey! Thanks for reaching out. A staff member will be with you shortly — please describe your issue in as much detail as possible.',
+    footer: 'Next RP Support',
+  });
+  autoEmbed.setAuthor({ name: 'Next RP Support', iconURL: client.user.displayAvatarURL() });
+  await tryDM(user.id, { embeds: [autoEmbed] });
+
   // Post the ticket header in the staff channel
   const staffEmbed = makeEmbed({
     color: Colors.Yellow,
