@@ -30,6 +30,10 @@ const commands = [
   new SlashCommandBuilder()
     .setName('transfer')
     .setDescription('Transfer this ticket to a specific department (staff only — run inside a ticket channel)'),
+
+  new SlashCommandBuilder()
+    .setName('qr')
+    .setDescription('Send a quick reply to the user (staff only — run inside a ticket channel)'),
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);

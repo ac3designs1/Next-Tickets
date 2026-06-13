@@ -18,6 +18,7 @@ const {
 
 const db = require('./database');
 const DEPARTMENTS = require('./departments.json');
+const QUICK_REPLIES = require('./quick-replies.json');
 
 // ---------------------------------------------------------------------------
 // Client setup
@@ -447,6 +448,32 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
 
+    // /qr — quick reply dropdown
+    if (commandName === 'qr') {
+      const ticket = db.getTicketByChannel(interaction.channelId);
+      if (!ticket) {
+        return interaction.reply({ content: '❌ This is not a ticket channel.', flags: MessageFlags.Ephemeral });
+      }
+      if (ticket.status === 'closed') {
+        return interaction.reply({ content: '❌ This ticket is closed.', flags: MessageFlags.Ephemeral });
+      }
+
+      const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId(`qr_select_${ticket.id}`)
+        .setPlaceholder('Choose a quick reply…')
+        .addOptions(
+          QUICK_REPLIES.map(qr =>
+            new StringSelectMenuOptionBuilder()
+              .setValue(qr.id)
+              .setLabel(qr.label)
+              .setDescription(qr.message.slice(0, 100))
+          )
+        );
+
+      const row = new ActionRowBuilder().addComponents(selectMenu);
+      return interaction.reply({ content: '**Quick Replies** — select one to send to the user:', components: [row], flags: MessageFlags.Ephemeral });
+    }
+
     // /transfer — move ticket to a department
     if (commandName === 'transfer') {
       const ticket = db.getTicketByChannel(interaction.channelId);
@@ -538,6 +565,53 @@ client.on('interactionCreate', async interaction => {
       return interaction.editReply({ content: '✅ Ticket closed.' });
     }
   }
+  // ── Select menu — quick reply ───────────────────────────────────────────
+  if (interaction.isStringSelectMenu() && interaction.customId.startsWith('qr_select_')) {
+    const ticketId = parseInt(interaction.customId.replace('qr_select_', ''), 10);
+    const ticket = db.getTicket(ticketId);
+    if (!ticket) return interaction.update({ content: '❌ Ticket not found.', components: [] });
+
+    const qrId = interaction.values[0];
+    const qr = QUICK_REPLIES.find(q => q.id === qrId);
+    if (!qr) return interaction.update({ content: '❌ Quick reply not found.', components: [] });
+
+    await interaction.deferUpdate();
+
+    // Find staff member's highest role for the author line
+    const member = interaction.member ?? await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+    let highestDept = null;
+    if (member) {
+      for (let i = DEPARTMENTS.length - 1; i >= 0; i--) {
+        if (member.roles.cache.has(DEPARTMENTS[i].roleId)) { highestDept = DEPARTMENTS[i]; break; }
+      }
+    }
+
+    const rankLabel = highestDept ? `${highestDept.emoji} ${highestDept.name}` : 'Staff';
+    const embedColor = highestDept?.color ?? Colors.Green;
+    const staffDisplayName = member?.displayName ?? interaction.user.username;
+
+    const userEmbed = makeEmbed({
+      color: embedColor,
+      description: qr.message,
+      footer: rankLabel,
+    });
+    userEmbed.setAuthor({ name: staffDisplayName, iconURL: interaction.user.displayAvatarURL() });
+
+    const dmSent = await tryDM(ticket.userId, { embeds: [userEmbed] });
+
+    // Log in the ticket channel
+    const logEmbed = makeEmbed({
+      color: embedColor,
+      title: `⚡ Quick Reply — ${qr.label}`,
+      description: qr.message,
+      footer: `Sent by ${staffDisplayName} · ${dmSent ? 'Delivered ✅' : 'Failed to DM ❌'}`,
+    });
+    const channel = interaction.guild?.channels.cache.get(ticket.channelId);
+    if (channel) await channel.send({ embeds: [logEmbed] });
+
+    return interaction.editReply({ content: dmSent ? `✅ Quick reply sent.` : `❌ Could not DM the user.`, components: [] });
+  }
+
   // ── Select menu — department transfer ──────────────────────────────────
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith('transfer_dept_')) {
     const ticketId = parseInt(interaction.customId.replace('transfer_dept_', ''), 10);

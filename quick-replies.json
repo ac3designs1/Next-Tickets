@@ -1,0 +1,42 @@
+[
+  {
+    "id": "hello",
+    "label": "Hello / Greeting",
+    "message": "Hey! Thanks for reaching out. A staff member will be with you shortly — please describe your issue in as much detail as possible."
+  },
+  {
+    "id": "resolved",
+    "label": "Issue Resolved",
+    "message": "Hey! We're glad we could help. Your issue has been marked as resolved. If you have any further questions, feel free to open a new ticket."
+  },
+  {
+    "id": "more_info",
+    "label": "Need More Info",
+    "message": "Hey! We need a bit more information to help you. Could you please provide more details about your issue? (e.g. your in-game name, what happened, any screenshots)"
+  },
+  {
+    "id": "under_review",
+    "label": "Under Review",
+    "message": "Hey! Your ticket is currently being reviewed by our team. We'll get back to you as soon as possible — thank you for your patience."
+  },
+  {
+    "id": "escalated",
+    "label": "Escalated to Higher Staff",
+    "message": "Hey! Your ticket has been escalated to a senior staff member who will be in touch shortly."
+  },
+  {
+    "id": "no_evidence",
+    "label": "No Evidence / Insufficient Proof",
+    "message": "Hey! Unfortunately we are unable to take action on this report without sufficient evidence. Please provide video or screenshot evidence and reopen a ticket."
+  },
+  {
+    "id": "warned",
+    "label": "Warning Issued",
+    "message": "Hey! A warning has been issued regarding this matter. Please ensure you review the server rules to avoid further action."
+  },
+  {
+    "id": "banned",
+    "label": "Action Taken — Ban",
+    "message": "Hey! After reviewing your report, appropriate action has been taken. Thank you for bringing this to our attention."
+  }
+]
