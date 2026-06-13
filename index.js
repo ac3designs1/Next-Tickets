@@ -524,6 +524,44 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
 
+    // Individual quick reply commands (e.g. /hello, /resolved, /moreinfo)
+    const quickReplyCmd = QUICK_REPLIES.find(
+      qr => qr.id.toLowerCase().replace(/_/g, '') === commandName
+    );
+    if (quickReplyCmd) {
+      const ticket = db.getTicketByChannel(interaction.channelId);
+      if (!ticket) return interaction.reply({ content: '❌ This is not a ticket channel.', flags: MessageFlags.Ephemeral });
+      if (ticket.status === 'closed') return interaction.reply({ content: '❌ This ticket is closed.', flags: MessageFlags.Ephemeral });
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const member = interaction.member ?? await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+      let highestDept = null;
+      if (member) {
+        for (let i = DEPARTMENTS.length - 1; i >= 0; i--) {
+          if (member.roles.cache.has(DEPARTMENTS[i].roleId)) { highestDept = DEPARTMENTS[i]; break; }
+        }
+      }
+      const rankLabel = highestDept ? `${highestDept.emoji} ${highestDept.name}` : 'Staff';
+      const embedColor = highestDept?.color ?? Colors.Green;
+      const staffDisplayName = member?.displayName ?? interaction.user.username;
+
+      const userEmbed = makeEmbed({ color: embedColor, description: quickReplyCmd.message, footer: rankLabel });
+      userEmbed.setAuthor({ name: staffDisplayName, iconURL: interaction.user.displayAvatarURL() });
+
+      const dmSent = await tryDM(ticket.userId, { embeds: [userEmbed] });
+
+      const logEmbed = makeEmbed({
+        color: embedColor,
+        title: `⚡ Quick Reply — ${quickReplyCmd.label}`,
+        description: quickReplyCmd.message,
+        footer: `Sent by ${staffDisplayName} · ${dmSent ? 'Delivered ✅' : 'Failed ❌'}`,
+      });
+      await interaction.channel.send({ embeds: [logEmbed] });
+
+      return interaction.editReply({ content: dmSent ? '✅ Sent!' : '❌ Could not DM the user.' });
+    }
+
     // /qr — quick reply dropdown
     if (commandName === 'qr') {
       const ticket = db.getTicketByChannel(interaction.channelId);

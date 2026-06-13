@@ -1,5 +1,6 @@
 require('dotenv').config();
 const { REST, Routes, SlashCommandBuilder } = require('discord.js');
+const QUICK_REPLIES = require('./quick-replies.json');
 
 const commands = [
   new SlashCommandBuilder()
@@ -31,9 +32,12 @@ const commands = [
     .setName('transfer')
     .setDescription('Transfer this ticket to a specific department (staff only — run inside a ticket channel)'),
 
-  new SlashCommandBuilder()
-    .setName('qr')
-    .setDescription('Send a quick reply to the user (staff only — run inside a ticket channel)'),
+  // Dynamically generate one command per quick reply
+  ...QUICK_REPLIES.map(qr =>
+    new SlashCommandBuilder()
+      .setName(qr.id.toLowerCase().replace(/_/g, ''))
+      .setDescription(`Quick reply: ${qr.label}`)
+  ),
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
@@ -42,14 +46,12 @@ const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
   try {
     console.log('Deploying slash commands...');
 
-    // Register to main guild
     await rest.put(
       Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.MAIN_GUILD_ID),
       { body: commands }
     );
     console.log(`Commands deployed to MAIN guild (${process.env.MAIN_GUILD_ID})`);
 
-    // Also register to staff guild if different
     if (process.env.STAFF_GUILD_ID && process.env.STAFF_GUILD_ID !== process.env.MAIN_GUILD_ID) {
       await rest.put(
         Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.STAFF_GUILD_ID),
