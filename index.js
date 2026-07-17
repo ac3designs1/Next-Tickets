@@ -313,6 +313,31 @@ async function runApplicationInDM(user) {
 // Applications helpers
 // ---------------------------------------------------------------------------
 
+/** Create a dedicated application channel in the staff guild */
+async function createApplicationChannel(app) {
+  const guild = getStaffGuild();
+  if (!guild) throw new Error('Staff guild not found');
+
+  const category = await getOrCreateCategory(guild, '📋 Staff Applications');
+
+  const safeName = app.username.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 16) || 'applicant';
+  const channelName = `app-${app.id}-${safeName}`;
+
+  const channel = await guild.channels.create({
+    name: channelName,
+    type: ChannelType.GuildText,
+    parent: category.id,
+    topic: `Application APP-${app.id} | Applicant: ${app.username} (${app.userId}) | Status: pending`,
+    permissionOverwrites: [
+      { id: guild.roles.everyone, deny: [PermissionFlagsBits.ViewChannel], type: OverwriteType.Role },
+      { id: client.user.id,       allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages], type: OverwriteType.Member },
+      { id: APPLICATIONS_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory], type: OverwriteType.Role },
+    ],
+  });
+
+  return channel;
+}
+
 /** Build the "Apply for Staff" panel message payload */
 function buildApplicationPanelPayload(open = true) {
   const embed = makeEmbed({
@@ -1015,16 +1040,32 @@ client.on('interactionCreate', async interaction => {
         const app = appDb.createApplication(interaction.user.id, interaction.user.tag, answers);
 
         try {
-          const staffGuild = getStaffGuild();
-          const appChannel = staffGuild
-            ? (staffGuild.channels.cache.get(APPLICATIONS_CHANNEL_ID) ?? await staffGuild.channels.fetch(APPLICATIONS_CHANNEL_ID))
-            : await client.channels.fetch(APPLICATIONS_CHANNEL_ID);
+          // Create a dedicated channel for this application
+          const appChannel = await createApplicationChannel(app);
           const embeds  = buildApplicationEmbeds(app, 'pending');
           const buttons = buildApplicationButtons(app.id, 'pending');
           const msg = await appChannel.send({ embeds, components: [buttons] });
-          appDb.setMessageId(app.id, msg.id);
+          appDb.setChannelMessage(app.id, appChannel.id, msg.id);
+
+          // Also ping the log channel if configured
+          if (APPLICATIONS_CHANNEL_ID) {
+            try {
+              const staffGuild = getStaffGuild();
+              const logChannel = staffGuild
+                ? (staffGuild.channels.cache.get(APPLICATIONS_CHANNEL_ID) ?? await staffGuild.channels.fetch(APPLICATIONS_CHANNEL_ID))
+                : await client.channels.fetch(APPLICATIONS_CHANNEL_ID);
+              await logChannel.send({
+                embeds: [makeEmbed({
+                  color: 0x5865F2,
+                  title: '📋 New Staff Application',
+                  description: `**${app.username}** has submitted a staff application.\n\n> View it in <#${appChannel.id}>`,
+                  footer: `APP-${app.id}`,
+                })],
+              });
+            } catch { /* log channel optional */ }
+          }
         } catch (err) {
-          console.error('Failed to post application to channel:', err.message);
+          console.error('Failed to create application channel:', err.message);
         }
       }).catch(err => {
         applicationDrafts.delete(interaction.user.id);
@@ -1063,10 +1104,25 @@ client.on('interactionCreate', async interaction => {
       appDb.updateStatus(appId, action, interaction.user.tag);
       const updated = appDb.getApplication(appId);
 
-      // Update the embeds in the applications channel
-      const updatedEmbeds   = buildApplicationEmbeds(updated, action);
-      const updatedButtons  = buildApplicationButtons(appId, action);
+      // Update the embeds and buttons in the application channel
+      const updatedEmbeds  = buildApplicationEmbeds(updated, action);
+      const updatedButtons = buildApplicationButtons(appId, action);
       await interaction.message.edit({ embeds: updatedEmbeds, components: [updatedButtons] });
+
+      // Rename channel and move to resolved category
+      try {
+        const safeName = updated.username.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 16) || 'applicant';
+        const prefix = action === 'accepted' ? '✅' : action === 'declined' ? '❌' : '🕐';
+        await interaction.channel.setName(`${prefix}-${appId}-${safeName}`);
+        await interaction.channel.setTopic(`APP-${appId} | ${updated.username} | Status: ${action} | Reviewed by ${interaction.user.tag}`);
+        const resolvedCat = await getOrCreateCategory(
+          interaction.guild,
+          action === 'accepted' ? '✅ Accepted Applications' : action === 'declined' ? '❌ Declined Applications' : '🕐 On Hold Applications'
+        );
+        await interaction.channel.setParent(resolvedCat.id, { lockPermissions: false });
+      } catch (err) {
+        console.error('Failed to update application channel:', err.message);
+      }
 
       // DM the applicant
       const dmMessages = {

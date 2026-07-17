@@ -62,6 +62,16 @@ function createApplication(userId, username, answers) {
   return db.applications[id];
 }
 
+/** Attach the Discord channel + message ID to an application */
+function setChannelMessage(appId, channelId, messageId) {
+  const db = read();
+  if (!db.applications[appId]) return null;
+  db.applications[appId].channelId = channelId;
+  db.applications[appId].messageId = messageId;
+  write(db);
+  return db.applications[appId];
+}
+
 /** Attach the Discord message ID to an application */
 function setMessageId(appId, messageId) {
   const db = read();
@@ -105,6 +115,7 @@ module.exports = {
   setOpen,
   createApplication,
   setMessageId,
+  setChannelMessage,
   updateStatus,
   getApplication,
   getAllApplications,
