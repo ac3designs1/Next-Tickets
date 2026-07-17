@@ -110,6 +110,11 @@ function hasPendingApplication(userId) {
   );
 }
 
+/** Find an application by its Discord channel ID */
+function getApplicationByChannel(channelId) {
+  return Object.values(read().applications).find(a => a.channelId === channelId) ?? null;
+}
+
 module.exports = {
   isOpen,
   setOpen,
@@ -120,4 +125,5 @@ module.exports = {
   getApplication,
   getAllApplications,
   hasPendingApplication,
+  getApplicationByChannel,
 };

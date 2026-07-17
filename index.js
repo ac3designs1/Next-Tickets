@@ -1061,6 +1061,23 @@ client.on('interactionCreate', async interaction => {
           const msg = await appChannel.send({ embeds, components: [buttons] });
           appDb.setChannelMessage(app.id, appChannel.id, msg.id);
 
+          // DM the applicant — confirm receipt
+          await tryDM(app.userId, {
+            embeds: [makeEmbed({
+              color: 0x5865F2,
+              title: '📋  Application Received',
+              description: [
+                `### Thanks for applying, ${app.username.split('#')[0]}!`,
+                ``,
+                `Your staff application for **Next RP** has been received and is currently under review.`,
+                `You will receive a DM here once a decision has been made.`,
+                ``,
+                `> Keep your DMs open so we can reach you.`,
+              ].join('\n'),
+              footer: `APP-${app.id}  ·  Next RP`,
+            })],
+          });
+
           // Also ping the log channel if configured
           if (APPLICATIONS_CHANNEL_ID) {
             try {
@@ -1342,25 +1359,26 @@ client.on('messageCreate', async message => {
     return;
   }
 
-  // ── Staff message in ticket channel with % prefix → reply to user ───────
+  // ── Staff message in ticket / application channel with % prefix → DM user ─
   if (message.guild && message.guild.id === process.env.STAFF_GUILD_ID) {
     if (!message.content.startsWith('%')) return; // internal note, do nothing
 
     const ticket = db.getTicketByChannel(message.channelId);
-    if (!ticket) return; // not a ticket channel
+    const application = !ticket ? appDb.getApplicationByChannel(message.channelId) : null;
 
-    if (ticket.status === 'closed') {
+    if (!ticket && !application) return; // not a managed channel
+
+    if (ticket?.status === 'closed') {
       return message.reply('⚠️ This ticket is closed. Use `/reopen` before replying.');
     }
 
     const replyContent = message.content.slice(1).trim();
     if (!replyContent) return message.reply('⚠️ Message is empty after the `%` prefix.');
 
-    // Find the staff member's highest department role
+    // Find the staff member's highest department role for display
     const member = message.member ?? await message.guild.members.fetch(message.author.id).catch(() => null);
     let highestDept = null;
     if (member) {
-      // DEPARTMENTS is ordered lowest → highest, so iterate in reverse to find the top rank
       for (let i = DEPARTMENTS.length - 1; i >= 0; i--) {
         if (member.roles.cache.has(DEPARTMENTS[i].roleId)) {
           highestDept = DEPARTMENTS[i];
@@ -1369,29 +1387,25 @@ client.on('messageCreate', async message => {
       }
     }
 
-    const rankLabel = highestDept ? `${highestDept.emoji} ${highestDept.name}` : 'Staff';
-    const embedColor = highestDept?.color ?? Colors.Green;
-    const staffDisplayName = member?.displayName ?? message.author.username;
+    const rankLabel    = highestDept ? `${highestDept.emoji} ${highestDept.name}` : 'Staff';
+    const embedColor   = highestDept?.color ?? Colors.Green;
+    const staffDisplay = member?.displayName ?? message.author.username;
+
+    const targetUserId = ticket ? ticket.userId : application.userId;
+    const contextLabel = application ? `APP-${application.id}  ·  Next RP` : `Ticket #${ticket?.id}  ·  Next RP`;
 
     const userEmbed = makeEmbed({
       color: embedColor,
       title: null,
       description: replyContent,
-      footer: `${rankLabel}`,
+      footer: `${rankLabel}  ·  ${contextLabel}`,
     });
+    userEmbed.setAuthor({ name: staffDisplay, iconURL: message.author.displayAvatarURL() });
 
-    userEmbed.setAuthor({
-      name: staffDisplayName,
-      iconURL: message.author.displayAvatarURL(),
-    });
+    const files  = message.attachments.map(a => a.url);
+    const dmSent = await tryDM(targetUserId, { embeds: [userEmbed], files });
 
-    // Forward attachments
-    const files = message.attachments.map(a => a.url);
-    const dmSent = await tryDM(ticket.userId, { embeds: [userEmbed], files });
-
-    // React to confirm delivery
     await message.react(dmSent ? '✅' : '❌');
-
     if (!dmSent) {
       await message.reply('⚠️ Could not DM the user — they may have DMs disabled.');
     }
