@@ -65,6 +65,10 @@ const commands = [
 async function deployCommands() {
   const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
   try {
+    // Clear any stale global commands first (they persist until explicitly deleted)
+    await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: [] });
+    console.log('[Commands] 🧹 Cleared global commands');
+
     console.log('[Commands] Deploying slash commands...');
     await rest.put(
       Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.MAIN_GUILD_ID),
