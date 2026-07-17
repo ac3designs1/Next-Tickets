@@ -1223,6 +1223,10 @@ client.on('messageCreate', async message => {
 
   // ── DM from user → forward to staff ticket channel ──────────────────────
   if (!message.guild) {
+    // Ignore DMs from users who are mid-application — their messages are
+    // handled by the awaitMessages collector inside runApplicationInDM()
+    if (applicationDrafts.has(message.author.id)) return;
+
     const ticket = db.getOpenTicketByUser(message.author.id);
 
     if (!ticket) {
