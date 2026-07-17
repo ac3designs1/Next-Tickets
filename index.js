@@ -184,174 +184,129 @@ async function createStaffChannel(ticket) {
 }
 
 // ---------------------------------------------------------------------------
-// Applications — question definitions (1 per modal step)
+// Applications — question definitions (DM-based, 1 per message)
 // ---------------------------------------------------------------------------
 const APP_QUESTIONS = [
-  // ── Section 1: General Info ─────────────────────────────────────────────
-  {
-    id:          'ign',
-    section:     '📋 General Information',
-    label:       'In-Game Name & Discord Username',
-    style:       TextInputStyle.Short,
-    placeholder: 'e.g. John Smith | john_smith',
-    min: 2, max: 80,
-  },
-  {
-    id:          'steamHex',
-    section:     '📋 General Information',
-    label:       'Steam Hex / FiveM ID',
-    style:       TextInputStyle.Short,
-    placeholder: 'e.g. steam:110000112345678',
-    min: 4, max: 64,
-  },
-  {
-    id:          'dobTimezone',
-    section:     '📋 General Information',
-    label:       'Date of Birth & Timezone',
-    style:       TextInputStyle.Short,
-    placeholder: 'e.g. 01/01/2000 | AEST (UTC+10)',
-    min: 4, max: 64,
-  },
-  {
-    id:          'availability',
-    section:     '📋 General Information',
-    label:       'Avg. weekly hours for staff duties',
-    style:       TextInputStyle.Short,
-    placeholder: 'Be realistic — e.g. 15–20 hrs/week',
-    min: 2, max: 64,
-  },
+  // ── Section 1: General Info ──────────────────────────────────────────────
+  { id: 'ign',            section: '📋 General Information',         label: 'What is your in-game name?',                                                                         hint: 'e.g. John Smith' },
+  { id: 'dobTimezone',    section: '📋 General Information',         label: 'What is your date of birth and timezone?',                                                           hint: 'e.g. 01/01/2000 | AEST (UTC+10)' },
+  { id: 'availability',   section: '📋 General Information',         label: 'How many hours per week can you realistically dedicate to staff duties?',                            hint: 'Be honest — e.g. 15–20 hrs/week' },
   // ── Section 2: Experience & Self-Assessment ──────────────────────────────
-  {
-    id:          'prevExp',
-    section:     '🧠 Experience & Self-Assessment',
-    label:       'Previous staff/moderation experience?',
-    style:       TextInputStyle.Paragraph,
-    placeholder: 'List server names, your rank, and why you left.\nWrite "None" if you have no prior experience.',
-    min: 4, max: 900,
-  },
-  {
-    id:          'whyServer',
-    section:     '🧠 Experience & Self-Assessment',
-    label:       'Why do you want to join our staff team?',
-    style:       TextInputStyle.Paragraph,
-    placeholder: 'Be specific to our server — what draws you to the team and what can you contribute?',
-    min: 50, max: 900,
-  },
-  {
-    id:          'modVsAdmin',
-    section:     '🧠 Experience & Self-Assessment',
-    label:       'Difference between Moderator & Admin?',
-    style:       TextInputStyle.Paragraph,
-    placeholder: 'In your own words, explain the difference between a Moderator and an Administrator.',
-    min: 30, max: 900,
-  },
-  {
-    id:          'qualities',
-    section:     '🧠 Experience & Self-Assessment',
-    label:       'What makes you a better fit than others?',
-    style:       TextInputStyle.Paragraph,
-    placeholder: 'What qualities do you possess that make you stand out as an applicant?',
-    min: 30, max: 900,
-  },
-  {
-    id:          'stressHandling',
-    section:     '🧠 Experience & Self-Assessment',
-    label:       'How do you handle toxic / high-stress sits?',
-    style:       TextInputStyle.Paragraph,
-    placeholder: 'How do you de-escalate toxic situations or manage extreme player behaviour? Give an example if you can.',
-    min: 30, max: 900,
-  },
+  { id: 'prevExp',        section: '🧠 Experience & Self-Assessment', label: 'Do you have any previous staff experience? If yes, list the server name, your rank, and why you left.', hint: 'Write "None" if you have no prior experience.' },
+  { id: 'whyServer',      section: '🧠 Experience & Self-Assessment', label: 'Why do you want to join the staff team of our server specifically?',                                 hint: 'Be specific — what draws you to this server and what can you contribute?' },
+  { id: 'modVsAdmin',     section: '🧠 Experience & Self-Assessment', label: 'In your own words, what is the difference between a Moderator and an Administrator?',               hint: '' },
+  { id: 'qualities',      section: '🧠 Experience & Self-Assessment', label: 'What qualities do you possess that make you a better fit than other applicants?',                   hint: '' },
+  { id: 'stressHandling', section: '🧠 Experience & Self-Assessment', label: 'How do you handle high-stress situations or dealing with extremely toxic players?',                  hint: 'Give an example if you can.' },
   // ── Section 3: Scenario Questions ───────────────────────────────────────
-  {
-    id:          'scenarioA',
-    section:     '⚠️ Scenario Questions',
-    label:       'Scenario A',
-    style:       TextInputStyle.Paragraph,
-    placeholder: 'You are in a sit with two players screaming OOC insults at each other. Neither is letting the other speak. How do you de-escalate and resolve this?',
-    min: 50, max: 900,
-  },
-  {
-    id:          'scenarioB',
-    section:     '⚠️ Scenario Questions',
-    label:       'Scenario B',
-    style:       TextInputStyle.Paragraph,
-    placeholder: 'A close friend of yours is caught clearly breaking a major rule (Combat Logging / VDM). No other staff are online. How do you handle this?',
-    min: 50, max: 900,
-  },
-  {
-    id:          'scenarioC',
-    section:     '⚠️ Scenario Questions',
-    label:       'Scenario C',
-    style:       TextInputStyle.Paragraph,
-    placeholder: 'You spectate a player suspected of using external cheats (aimbot, menu injection). What steps do you take to confirm your suspicions before taking any action?',
-    min: 50, max: 900,
-  },
-  {
-    id:          'scenarioD',
-    section:     '⚠️ Scenario Questions',
-    label:       'Scenario D',
-    style:       TextInputStyle.Paragraph,
-    placeholder: 'A player sends you a 15-second clip showing a rule break but NO context leading up to the event. They demand an immediate ban. What is your response?',
-    min: 50, max: 900,
-  },
-  {
-    id:          'scenarioE',
-    section:     '⚠️ Scenario Questions',
-    label:       'Scenario E',
-    style:       TextInputStyle.Paragraph,
-    placeholder: 'An admin ranked higher than you makes a decision mid-scene that clearly violates server rules. How do you handle this situation?',
-    min: 50, max: 900,
-  },
+  { id: 'scenarioA',      section: '⚠️ Scenario Questions',           label: 'Scenario A: You are in a sit with two players who are screaming over each other and trading OOC insults. Neither is letting the other speak. How do you de-escalate and resolve this?', hint: '' },
+  { id: 'scenarioB',      section: '⚠️ Scenario Questions',           label: 'Scenario B: A close friend of yours on the server is caught clearly breaking a major rule (such as Combat Logging or VDM). No other staff are online. How do you handle this?',        hint: 'We are testing for bias — be honest.' },
+  { id: 'scenarioC',      section: '⚠️ Scenario Questions',           label: 'Scenario C: You spectate a player suspected of using external cheats (e.g. aimbot or menu-injecting). What steps do you take to confirm your suspicions before taking action?',        hint: '' },
+  { id: 'scenarioD',      section: '⚠️ Scenario Questions',           label: 'Scenario D: A player submits a clip showing a rule break, but the clip is only 15 seconds long and does not show the context leading up to the event. They demand an immediate ban. What is your response?', hint: '' },
+  { id: 'scenarioE',      section: '⚠️ Scenario Questions',           label: 'Scenario E: An admin higher in rank than you makes a decision during an active scene that clearly violates the server\'s established rules. How do you handle this?',                  hint: 'Think carefully about chain of command.' },
   // ── Section 4: Rules & Knowledge ────────────────────────────────────────
-  {
-    id:          'rulesFailFear',
-    section:     '📖 Rules & Knowledge',
-    label:       'Define FailRP & FearRP',
-    style:       TextInputStyle.Paragraph,
-    placeholder: 'Define each term and give a brief in-game example.\n\nFailRP:\nFearRP:',
-    min: 30, max: 900,
-  },
-  {
-    id:          'rulesMetaPower',
-    section:     '📖 Rules & Knowledge',
-    label:       'Define Meta-gaming & Power-gaming',
-    style:       TextInputStyle.Paragraph,
-    placeholder: 'Define each term and give a brief in-game example.\n\nMeta-gaming:\nPower-gaming:',
-    min: 30, max: 900,
-  },
-  {
-    id:          'rulesRdmNlr',
-    section:     '📖 Rules & Knowledge',
-    label:       'Define RDM, VDM & New Life Rule',
-    style:       TextInputStyle.Paragraph,
-    placeholder: 'Define each term and give a brief in-game example.\n\nRDM:\nVDM:\nNew Life Rule (NLR):',
-    min: 30, max: 900,
-  },
+  { id: 'rulesFailFear',  section: '📖 Rules & Knowledge',            label: 'Briefly define FailRP and FearRP, and give an in-game example of each.',                           hint: 'Format: FailRP: [definition + example] | FearRP: [definition + example]' },
+  { id: 'rulesMetaPower', section: '📖 Rules & Knowledge',            label: 'Briefly define Meta-gaming and Power-gaming, and give an in-game example of each.',               hint: '' },
+  { id: 'rulesRdmNlr',    section: '📖 Rules & Knowledge',            label: 'Briefly define RDM, VDM and the New Life Rule (NLR), and give an in-game example of each.',       hint: '' },
 ];
 
-/** Show a single-question modal for the given step index */
-function showAppQuestion(interaction, stepIndex) {
-  const q     = APP_QUESTIONS[stepIndex];
-  const total = APP_QUESTIONS.length;
+/**
+ * Run the full application as a DM conversation.
+ * Returns the completed answers object, or null if cancelled/timed out.
+ */
+async function runApplicationInDM(user) {
+  let dm;
+  try { dm = await user.createDM(); } catch {
+    return null; // DMs disabled
+  }
 
-  const modal = new ModalBuilder()
-    .setCustomId(`app_q_${String(stepIndex).padStart(2, '0')}`)
-    .setTitle(`Staff Application (${stepIndex + 1}/${total})`);
+  const TIMEOUT = 45 * 60 * 1000; // 45 minutes per question
+  const total   = APP_QUESTIONS.length;
 
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId('app_answer')
-        .setLabel(q.label)
-        .setStyle(q.style)
-        .setPlaceholder(q.placeholder)
-        .setRequired(true)
-        .setMinLength(q.min ?? 1)
-        .setMaxLength(q.max ?? 1000)
-    )
-  );
+  await dm.send({ embeds: [
+    new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle('📋  Next RP — Staff Application')
+      .setDescription(
+        '**Welcome! You\'re about to complete a staff application.**\n\n' +
+        `There are **${total} questions** across 4 sections.\n` +
+        'Simply send your answer as a message after each question appears.\n\n' +
+        '> Type `cancel` at any time to cancel your application.\n' +
+        '> You have **45 minutes** to answer each question.'
+      )
+      .setFooter({ text: 'Your answers will be reviewed by management.' })
+      .setTimestamp(),
+  ]});
 
-  return interaction.showModal(modal);
+  const answers = {};
+
+  for (let i = 0; i < total; i++) {
+    const q = APP_QUESTIONS[i];
+
+    // Section header when section changes
+    const prevSection = i > 0 ? APP_QUESTIONS[i - 1].section : null;
+    if (q.section !== prevSection) {
+      await dm.send({ embeds: [
+        new EmbedBuilder()
+          .setColor(0x23272A)
+          .setDescription(`**${q.section}**`),
+      ]});
+    }
+
+    // Send the question
+    await dm.send({ embeds: [
+      new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle(`Question ${i + 1} of ${total}`)
+        .setDescription(`**${q.label}**${q.hint ? `\n\n*${q.hint}*` : ''}`)
+        .setFooter({ text: `${q.section}  ·  ${total - i - 1} question${total - i - 1 !== 1 ? 's' : ''} remaining after this` }),
+    ]});
+
+    // Wait for the user's reply
+    let collected;
+    try {
+      collected = await dm.awaitMessages({
+        filter: m => m.author.id === user.id,
+        max: 1,
+        time: TIMEOUT,
+        errors: ['time'],
+      });
+    } catch {
+      await dm.send({ embeds: [makeEmbed({
+        color: Colors.Red,
+        title: '⏰  Application Timed Out',
+        description: 'Your application has been cancelled due to inactivity.\nClick **Apply for Staff** again whenever you\'re ready.',
+      })]});
+      return null;
+    }
+
+    const answer = collected.first().content.trim();
+
+    if (answer.toLowerCase() === 'cancel') {
+      await dm.send({ embeds: [makeEmbed({
+        color: Colors.Red,
+        title: '❌  Application Cancelled',
+        description: 'Your application has been cancelled.\nYou can click **Apply for Staff** again at any time.',
+      })]});
+      return null;
+    }
+
+    answers[q.id] = answer;
+
+    // Acknowledge (not on last question)
+    if (i < total - 1) {
+      await dm.send(`✅  Got it — moving to question **${i + 2}** of **${total}**…`);
+    }
+  }
+
+  // All done
+  await dm.send({ embeds: [makeEmbed({
+    color: Colors.Green,
+    title: '🎉  Application Complete!',
+    description: 'All questions answered. Your application has been submitted and will be reviewed by management.\n\n> Make sure your DMs stay open so we can contact you with a decision.',
+    footer: 'Next RP Staff Team',
+  })]});
+
+  return answers;
 }
 
 // ---------------------------------------------------------------------------
@@ -417,10 +372,9 @@ function buildApplicationEmbeds(app, status = 'pending') {
       (app.reviewedBy ? `\n🔍 Reviewed by **${app.reviewedBy}**` : '')
     )
     .addFields(
-      { name: '🎮 In-Game Name',           value: trim(app.ign, 256),          inline: true },
-      { name: '🪪 Steam Hex / FiveM ID',   value: trim(app.steamHex, 256),     inline: true },
-      { name: '📅 DOB & Timezone',         value: trim(app.dobTimezone, 256),  inline: true },
-      { name: '⏰ Weekly Availability',    value: trim(app.availability, 256), inline: true },
+      { name: '🎮 In-Game Name',        value: trim(app.ign, 256),          inline: true },
+      { name: '📅 DOB & Timezone',      value: trim(app.dobTimezone, 256),  inline: true },
+      { name: '⏰ Weekly Availability', value: trim(app.availability, 256), inline: true },
     )
     .setFooter({ text: `APP-${app.id}  ·  Section 1 of 4 — General Information` })
     .setTimestamp();
@@ -582,7 +536,7 @@ async function openTicket(user, subject) {
 // ---------------------------------------------------------------------------
 // Event: ready
 // ---------------------------------------------------------------------------
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   console.log(`   Main guild  : ${process.env.MAIN_GUILD_ID}`);
   console.log(`   Staff guild : ${process.env.STAFF_GUILD_ID}`);
@@ -1027,55 +981,9 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── Multi-step application modal submissions ─────────────────────────────
-  if (interaction.isModalSubmit() && interaction.customId.startsWith('app_q_')) {
-    const stepIndex = parseInt(interaction.customId.replace('app_q_', ''), 10);
-    const answer    = interaction.fields.getTextInputValue('app_answer');
-    const q         = APP_QUESTIONS[stepIndex];
-
-    // Store answer in the in-memory draft
-    if (!applicationDrafts.has(interaction.user.id)) applicationDrafts.set(interaction.user.id, {});
-    applicationDrafts.get(interaction.user.id)[q.id] = answer;
-
-    const isLast = stepIndex === APP_QUESTIONS.length - 1;
-
-    if (!isLast) {
-      // Show next question
-      return showAppQuestion(interaction, stepIndex + 1);
-    }
-
-    // ── All questions answered — save to DB and post to channel ────────────
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-    const answers = applicationDrafts.get(interaction.user.id);
-    applicationDrafts.delete(interaction.user.id);
-
-    const app = appDb.createApplication(interaction.user.id, interaction.user.tag, answers);
-
-    try {
-      const appChannel = await client.channels.fetch(APPLICATIONS_CHANNEL_ID);
-      const embeds  = buildApplicationEmbeds(app, 'pending');
-      const buttons = buildApplicationButtons(app.id, 'pending');
-      // Send first embed with buttons, remaining embeds as follow-ups (Discord limit: 10 embeds per message)
-      const msg = await appChannel.send({ embeds, components: [buttons] });
-      appDb.setMessageId(app.id, msg.id);
-    } catch (err) {
-      console.error('Failed to post application to channel:', err.message);
-    }
-
-    return interaction.editReply({
-      content: [
-        `✅  **Application submitted!**  \`APP-${app.id}\``,
-        '',
-        'Our management team will review your responses and contact you via DM with a decision.',
-        '> Make sure your DMs are open!',
-      ].join('\n'),
-    });
-  }
-
   // ── Button interactions ──────────────────────────────────────────────────
   if (interaction.isButton()) {
-    // ── Apply for Staff panel button — starts question chain ────────────
+    // ── Apply for Staff panel button — starts DM question flow ──────────
     if (interaction.customId === 'apply_staff_panel') {
       if (!appDb.isOpen()) {
         return interaction.reply({ content: '❌ Applications are currently closed. Check back later!', flags: MessageFlags.Ephemeral });
@@ -1083,10 +991,44 @@ client.on('interactionCreate', async interaction => {
       if (appDb.hasPendingApplication(interaction.user.id)) {
         return interaction.reply({ content: '❌ You already have a pending application. Please wait for a decision before re-applying.', flags: MessageFlags.Ephemeral });
       }
+      if (applicationDrafts.has(interaction.user.id)) {
+        return interaction.reply({ content: '❌ You already have an application in progress! Check your DMs.', flags: MessageFlags.Ephemeral });
+      }
 
-      // Clear any stale draft and start from question 0
-      applicationDrafts.delete(interaction.user.id);
-      return showAppQuestion(interaction, 0);
+      // Test DMs are open before starting
+      let dmTest;
+      try { dmTest = await interaction.user.createDM(); } catch {
+        return interaction.reply({ content: '❌ I couldn\'t DM you. Please enable DMs from server members and try again.', flags: MessageFlags.Ephemeral });
+      }
+
+      // Acknowledge immediately so Discord doesn't show a timeout
+      await interaction.reply({ content: '📨  Check your DMs! Your application has started.', flags: MessageFlags.Ephemeral });
+
+      // Mark as in-progress
+      applicationDrafts.set(interaction.user.id, { inProgress: true });
+
+      // Run the DM flow (non-blocking)
+      runApplicationInDM(interaction.user).then(async answers => {
+        applicationDrafts.delete(interaction.user.id);
+        if (!answers) return; // cancelled or timed out
+
+        const app = appDb.createApplication(interaction.user.id, interaction.user.tag, answers);
+
+        try {
+          const appChannel = await client.channels.fetch(APPLICATIONS_CHANNEL_ID);
+          const embeds  = buildApplicationEmbeds(app, 'pending');
+          const buttons = buildApplicationButtons(app.id, 'pending');
+          const msg = await appChannel.send({ embeds, components: [buttons] });
+          appDb.setMessageId(app.id, msg.id);
+        } catch (err) {
+          console.error('Failed to post application to channel:', err.message);
+        }
+      }).catch(err => {
+        applicationDrafts.delete(interaction.user.id);
+        console.error('Application DM flow error:', err.message);
+      });
+
+      return;
     }
 
     // ── Application Accept / Decline / Hold buttons ─────────────────────
