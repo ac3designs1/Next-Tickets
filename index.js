@@ -7,6 +7,9 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
   ChannelType,
@@ -16,9 +19,15 @@ const {
   Colors,
 } = require('discord.js');
 
-const db = require('./database');
-const DEPARTMENTS = require('./departments.json');
+const db      = require('./database');
+const appDb   = require('./applications-db');
+const DEPARTMENTS  = require('./departments.json');
 const QUICK_REPLIES = require('./quick-replies.json');
+
+// Channel where submitted applications are posted (management-only channel in main guild)
+const APPLICATIONS_CHANNEL_ID = process.env.APPLICATIONS_CHANNEL_ID || '1527645538244100136';
+// Role that can action (accept/decline) applications
+const APPLICATIONS_ROLE_ID = process.env.APPLICATIONS_ROLE_ID || '1515309451727470794'; // defaults to management role
 
 // ---------------------------------------------------------------------------
 // Client setup
@@ -171,6 +180,106 @@ async function createStaffChannel(ticket) {
 }
 
 // ---------------------------------------------------------------------------
+// Applications helpers
+// ---------------------------------------------------------------------------
+
+/** Build the "Apply for Staff" panel message payload */
+function buildApplicationPanelPayload(open = true) {
+  const embed = makeEmbed({
+    color: open ? 0x5865F2 : 0x747F8D,
+    title: open ? '📋 Staff Applications' : '📋 Staff Applications — Closed',
+    description: open
+      ? [
+          '**Next RP is looking for dedicated staff members!**',
+          '',
+          'Click the button below to submit your application.',
+          'Our management team will review it and get back to you.',
+          '',
+          '> Make sure your DMs are open so we can contact you.',
+        ].join('\n')
+      : [
+          '**Applications are currently closed.**',
+          '',
+          'We are not accepting new staff applications at this time.',
+          'Check back later or keep an eye on announcements.',
+        ].join('\n'),
+    footer: open ? 'Applications are open' : 'Applications are closed',
+  });
+
+  const button = new ButtonBuilder()
+    .setCustomId('apply_staff_panel')
+    .setLabel(open ? 'Apply for Staff' : 'Applications Closed')
+    .setStyle(open ? ButtonStyle.Success : ButtonStyle.Secondary)
+    .setEmoji(open ? '📋' : '🔒')
+    .setDisabled(!open);
+
+  const row = new ActionRowBuilder().addComponents(button);
+  return { embeds: [embed], components: [row] };
+}
+
+/** Build the application result embed (shown in the applications channel) */
+function buildApplicationEmbed(app, status = 'pending') {
+  const statusMeta = {
+    pending:  { color: 0xFEE75C, label: '⏳ Pending Review'  },
+    accepted: { color: 0x57F287, label: '✅ Accepted'         },
+    declined: { color: 0xED4245, label: '❌ Declined'         },
+    hold:     { color: 0xEB459E, label: '🕐 On Hold'          },
+  };
+  const meta = statusMeta[status] ?? statusMeta.pending;
+
+  const embed = new EmbedBuilder()
+    .setColor(meta.color)
+    .setTitle(`📋 Staff Application — APP-${app.id}`)
+    .setDescription(`**Status: ${meta.label}**`)
+    .addFields(
+      { name: '👤 Applicant',               value: `<@${app.userId}> (${app.username})`, inline: true },
+      { name: '🕐 Submitted',               value: `<t:${Math.floor(new Date(app.submittedAt).getTime() / 1000)}:R>`, inline: true },
+      { name: '\u200B',                      value: '\u200B', inline: true },
+      { name: '🎮 In-Game Name',             value: app.inGameName      || '—', inline: true },
+      { name: '🎂 Age',                      value: app.age             || '—', inline: true },
+      { name: '⏰ Hours / Week',             value: app.hoursPerWeek    || '—', inline: true },
+      { name: '💬 Why do you want to be staff?',    value: app.whyStaff.slice(0, 1024)     || '—' },
+      { name: '📁 Previous Experience',              value: app.experience.slice(0, 1024)   || '—' },
+    )
+    .setFooter({ text: `APP-${app.id}${app.reviewedBy ? ` · Reviewed by ${app.reviewedBy}` : ''}` })
+    .setTimestamp();
+
+  return embed;
+}
+
+/** Build the action row buttons for an application (pending = Accept/Decline/Hold; else locked) */
+function buildApplicationButtons(appId, status = 'pending') {
+  if (status !== 'pending' && status !== 'hold') {
+    // Application resolved — show a single disabled "Reviewed" button
+    return new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`app_noop_${appId}`)
+        .setLabel('Reviewed')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(true)
+    );
+  }
+
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`app_accept_${appId}`)
+      .setLabel('Accept')
+      .setStyle(ButtonStyle.Success)
+      .setEmoji('✅'),
+    new ButtonBuilder()
+      .setCustomId(`app_decline_${appId}`)
+      .setLabel('Decline')
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji('❌'),
+    new ButtonBuilder()
+      .setCustomId(`app_hold_${appId}`)
+      .setLabel('On Hold')
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji('🕐'),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Ticket creation logic
 // ---------------------------------------------------------------------------
 async function openTicket(user, subject) {
@@ -295,6 +404,28 @@ client.once('ready', async () => {
       }
     } catch (err) {
       console.error('Failed to post ticket panel:', err.message);
+    }
+  }
+
+  // Auto-post the staff applications panel
+  const appPanelChannelId = process.env.APPLICATIONS_PANEL_CHANNEL_ID;
+  if (appPanelChannelId) {
+    try {
+      const appPanelChannel = await client.channels.fetch(appPanelChannelId);
+      if (appPanelChannel) {
+        const recent = await appPanelChannel.messages.fetch({ limit: 20 });
+        const existing = recent.find(m => m.author.id === client.user.id && m.components?.length > 0
+          && m.components[0]?.components?.some(c => c.customId === 'apply_staff_panel'));
+        if (existing) {
+          console.log(`ℹ️  Applications panel already exists in #${appPanelChannel.name} — skipping.`);
+        } else {
+          const isOpen = appDb.isOpen();
+          await appPanelChannel.send(buildApplicationPanelPayload(isOpen));
+          console.log(`✅ Applications panel posted in #${appPanelChannel.name}`);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to post applications panel:', err.message);
     }
   }
 
@@ -573,6 +704,77 @@ client.on('interactionCreate', async interaction => {
     }
 
 
+    // /applications — manage staff applications
+    if (commandName === 'applications') {
+      const sub = interaction.options.getSubcommand();
+
+      // Only the applications role (management) can use this command
+      const isManagement = interaction.member?.roles?.cache?.has(APPLICATIONS_ROLE_ID)
+        || interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
+
+      if (!isManagement) {
+        return interaction.reply({ content: '❌ You do not have permission to manage applications.', flags: MessageFlags.Ephemeral });
+      }
+
+      if (sub === 'open') {
+        appDb.setOpen(true);
+        // Update any panel message if APPLICATIONS_PANEL_CHANNEL_ID is set
+        const panelChId = process.env.APPLICATIONS_PANEL_CHANNEL_ID;
+        if (panelChId) {
+          try {
+            const ch = await client.channels.fetch(panelChId);
+            const msgs = await ch.messages.fetch({ limit: 20 });
+            const panel = msgs.find(m => m.author.id === client.user.id && m.components?.length > 0
+              && m.components[0]?.components?.some(c => c.customId === 'apply_staff_panel'));
+            if (panel) await panel.edit(buildApplicationPanelPayload(true));
+          } catch { /* panel channel may not exist */ }
+        }
+        return interaction.reply({ content: '✅ Staff applications are now **open**. The panel has been updated.', flags: MessageFlags.Ephemeral });
+      }
+
+      if (sub === 'close') {
+        appDb.setOpen(false);
+        const panelChId = process.env.APPLICATIONS_PANEL_CHANNEL_ID;
+        if (panelChId) {
+          try {
+            const ch = await client.channels.fetch(panelChId);
+            const msgs = await ch.messages.fetch({ limit: 20 });
+            const panel = msgs.find(m => m.author.id === client.user.id && m.components?.length > 0
+              && m.components[0]?.components?.some(c => c.customId === 'apply_staff_panel'));
+            if (panel) await panel.edit(buildApplicationPanelPayload(false));
+          } catch { /* panel channel may not exist */ }
+        }
+        return interaction.reply({ content: '✅ Staff applications are now **closed**. The panel has been updated.', flags: MessageFlags.Ephemeral });
+      }
+
+      if (sub === 'setup') {
+        await interaction.channel.send(buildApplicationPanelPayload(appDb.isOpen()));
+        return interaction.reply({ content: '✅ Applications panel posted!', flags: MessageFlags.Ephemeral });
+      }
+
+      if (sub === 'list') {
+        const statusFilter = interaction.options.getString('status') ?? null;
+        const apps = appDb.getAllApplications(statusFilter);
+
+        if (!apps.length) {
+          return interaction.reply({ content: `No applications found${statusFilter ? ` with status **${statusFilter}**` : ''}.`, flags: MessageFlags.Ephemeral });
+        }
+
+        const lines = apps.slice(-20).map(a =>
+          `**APP-${a.id}** · ${a.username} · ${a.inGameName} · \`${a.status}\` · <t:${Math.floor(new Date(a.submittedAt).getTime() / 1000)}:R>`
+        );
+
+        const embed = makeEmbed({
+          color: 0x5865F2,
+          title: `📋 Applications${statusFilter ? ` — ${statusFilter}` : ''}`,
+          description: lines.join('\n'),
+          footer: `${apps.length} total${statusFilter ? ` · filtered by ${statusFilter}` : ''}`,
+        });
+
+        return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      }
+    }
+
     // /transfer — move ticket to a department
     if (commandName === 'transfer') {
       const ticket = db.getTicketByChannel(interaction.channelId);
@@ -607,8 +809,180 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── Modal submissions ────────────────────────────────────────────────────
+  if (interaction.isModalSubmit() && interaction.customId === 'apply_staff_modal') {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    const inGameName   = interaction.fields.getTextInputValue('app_ingame_name');
+    const age          = interaction.fields.getTextInputValue('app_age');
+    const whyStaff     = interaction.fields.getTextInputValue('app_why_staff');
+    const experience   = interaction.fields.getTextInputValue('app_experience');
+    const hoursPerWeek = interaction.fields.getTextInputValue('app_hours');
+
+    // Create record
+    const app = appDb.createApplication(interaction.user.id, interaction.user.tag, {
+      inGameName, age, whyStaff, experience, hoursPerWeek,
+    });
+
+    // Post embed to applications channel
+    try {
+      const appChannel = await client.channels.fetch(APPLICATIONS_CHANNEL_ID);
+      const embed = buildApplicationEmbed(app, 'pending');
+      const buttons = buildApplicationButtons(app.id, 'pending');
+      const msg = await appChannel.send({ embeds: [embed], components: [buttons] });
+      appDb.setMessageId(app.id, msg.id);
+    } catch (err) {
+      console.error('Failed to post application to channel:', err.message);
+    }
+
+    return interaction.editReply({
+      content: [
+        `✅ **Application submitted!** (APP-${app.id})`,
+        '',
+        'Our management team will review your application and DM you with a decision.',
+        'Make sure your DMs are open!',
+      ].join('\n'),
+    });
+  }
+
   // ── Button interactions ──────────────────────────────────────────────────
   if (interaction.isButton()) {
+    // ── Apply for Staff panel button ────────────────────────────────────
+    if (interaction.customId === 'apply_staff_panel') {
+      if (!appDb.isOpen()) {
+        return interaction.reply({ content: '❌ Applications are currently closed. Check back later!', flags: MessageFlags.Ephemeral });
+      }
+      if (appDb.hasPendingApplication(interaction.user.id)) {
+        return interaction.reply({ content: '❌ You already have a pending application. Please wait for a decision before re-applying.', flags: MessageFlags.Ephemeral });
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId('apply_staff_modal')
+        .setTitle('Next RP — Staff Application');
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('app_ingame_name')
+            .setLabel('What is your in-game name?')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('e.g. John Smith')
+            .setRequired(true)
+            .setMaxLength(64)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('app_age')
+            .setLabel('How old are you?')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('e.g. 18')
+            .setRequired(true)
+            .setMaxLength(3)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('app_why_staff')
+            .setLabel('Why do you want to be a staff member?')
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder('Tell us why you want to join the team and what you can bring...')
+            .setRequired(true)
+            .setMinLength(80)
+            .setMaxLength(1000)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('app_experience')
+            .setLabel('Previous moderation / staff experience?')
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder('List any previous Discord moderation, FiveM staff, or similar experience...')
+            .setRequired(true)
+            .setMinLength(30)
+            .setMaxLength(1000)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('app_hours')
+            .setLabel('Hours per week you can commit to the server?')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('e.g. 10-15 hours')
+            .setRequired(true)
+            .setMaxLength(32)
+        ),
+      );
+
+      return interaction.showModal(modal);
+    }
+
+    // ── Application Accept / Decline / Hold buttons ─────────────────────
+    if (interaction.customId.startsWith('app_accept_') ||
+        interaction.customId.startsWith('app_decline_') ||
+        interaction.customId.startsWith('app_hold_')) {
+
+      // Only the applications management role can action these
+      const isManagement = interaction.member?.roles?.cache?.has(APPLICATIONS_ROLE_ID)
+        || interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
+
+      if (!isManagement) {
+        return interaction.reply({ content: '❌ Only management can action applications.', flags: MessageFlags.Ephemeral });
+      }
+
+      await interaction.deferUpdate();
+
+      let action, appId;
+      if (interaction.customId.startsWith('app_accept_'))  { action = 'accepted'; appId = interaction.customId.replace('app_accept_',  ''); }
+      if (interaction.customId.startsWith('app_decline_')) { action = 'declined'; appId = interaction.customId.replace('app_decline_', ''); }
+      if (interaction.customId.startsWith('app_hold_'))    { action = 'hold';     appId = interaction.customId.replace('app_hold_',    ''); }
+
+      const app = appDb.getApplication(appId);
+      if (!app) return interaction.followUp({ content: '❌ Application not found.', flags: MessageFlags.Ephemeral });
+      if (app.status !== 'pending' && app.status !== 'hold') {
+        return interaction.followUp({ content: '❌ This application has already been reviewed.', flags: MessageFlags.Ephemeral });
+      }
+
+      appDb.updateStatus(appId, action, interaction.user.tag);
+      const updated = appDb.getApplication(appId);
+
+      // Update the embed in the applications channel
+      const updatedEmbed = buildApplicationEmbed(updated, action);
+      const updatedButtons = buildApplicationButtons(appId, action);
+      await interaction.message.edit({ embeds: [updatedEmbed], components: [updatedButtons] });
+
+      // DM the applicant
+      const dmMessages = {
+        accepted: [
+          '🎉 **Congratulations!** Your staff application for Next RP has been **accepted**.',
+          '',
+          'A member of management will be in touch shortly with next steps.',
+          'Welcome to the team!',
+        ].join('\n'),
+        declined: [
+          '❌ Thank you for your interest in joining the Next RP staff team.',
+          '',
+          'Unfortunately your application was **not successful** at this time.',
+          'You\'re welcome to apply again in the future.',
+        ].join('\n'),
+        hold: [
+          '🕐 Your staff application for Next RP has been placed **on hold**.',
+          '',
+          'Management may reach out to you with further questions.',
+        ].join('\n'),
+      };
+
+      const dmEmbed = makeEmbed({
+        color: action === 'accepted' ? Colors.Green : action === 'declined' ? Colors.Red : Colors.Fuchsia,
+        title: `📋 Staff Application — ${action === 'accepted' ? 'Accepted ✅' : action === 'declined' ? 'Declined ❌' : 'On Hold 🕐'}`,
+        description: dmMessages[action],
+        footer: `APP-${appId} · Next RP`,
+      });
+
+      await tryDM(updated.userId, { embeds: [dmEmbed] });
+
+      return interaction.followUp({
+        content: `✅ Application **APP-${appId}** marked as **${action}**. Applicant has been notified via DM.`,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
     // Open ticket from panel button
     if (interaction.customId === 'open_ticket_panel') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });

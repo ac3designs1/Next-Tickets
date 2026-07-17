@@ -32,6 +32,27 @@ const commands = [
     .setName('transfer')
     .setDescription('Transfer this ticket to a specific department (staff only — run inside a ticket channel)'),
 
+  new SlashCommandBuilder()
+    .setName('applications')
+    .setDescription('Manage staff applications (management only)')
+    .addSubcommand(sub => sub.setName('open').setDescription('Open staff applications'))
+    .addSubcommand(sub => sub.setName('close').setDescription('Close staff applications — no new submissions accepted'))
+    .addSubcommand(sub => sub.setName('setup').setDescription('Post the "Apply for Staff" panel in this channel'))
+    .addSubcommand(sub =>
+      sub.setName('list')
+        .setDescription('List recent applications')
+        .addStringOption(opt =>
+          opt.setName('status')
+            .setDescription('Filter by status')
+            .addChoices(
+              { name: 'Pending',  value: 'pending'  },
+              { name: 'Accepted', value: 'accepted' },
+              { name: 'Declined', value: 'declined' },
+              { name: 'On Hold',  value: 'hold'     },
+            )
+        )
+    ),
+
   // Dynamically generate one command per quick reply
   ...QUICK_REPLIES.map(qr =>
     new SlashCommandBuilder()
