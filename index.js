@@ -189,14 +189,16 @@ async function createStaffChannel(ticket) {
 const APP_QUESTIONS = [
   // ── Section 1: General Info ──────────────────────────────────────────────
   { id: 'ign',            section: '📋 General Information',         label: 'What is your in-game name?',                                                                         hint: 'e.g. John Smith' },
-  { id: 'dobTimezone',    section: '📋 General Information',         label: 'What is your date of birth and timezone?',                                                           hint: 'e.g. 01/01/2000 | AEST (UTC+10)' },
+  { id: 'dobTimezone',    section: '📋 General Information',         label: 'What is your date of birth? ',                                                           hint: 'e.g. 01/01/2000' },
+  { id: 'dobTimezone',    section: '📋 General Information',         label: 'What country do you live in?',                                                           hint: 'e.g. 01/01/2000' },
   { id: 'availability',   section: '📋 General Information',         label: 'How many hours per week can you realistically dedicate to staff duties?',                            hint: 'Be honest — e.g. 15–20 hrs/week' },
   // ── Section 2: Experience & Self-Assessment ──────────────────────────────
-  { id: 'prevExp',        section: '🧠 Experience & Self-Assessment', label: 'Do you have any previous staff experience? If yes, list the server name, your rank, and why you left.', hint: 'Write "None" if you have no prior experience.' },
-  { id: 'whyServer',      section: '🧠 Experience & Self-Assessment', label: 'Why do you want to join the staff team of our server specifically?',                                 hint: 'Be specific — what draws you to this server and what can you contribute?' },
-  { id: 'modVsAdmin',     section: '🧠 Experience & Self-Assessment', label: 'In your own words, what is the difference between a Moderator and an Administrator?',               hint: '' },
-  { id: 'qualities',      section: '🧠 Experience & Self-Assessment', label: 'What qualities do you possess that make you a better fit than other applicants?',                   hint: '' },
-  { id: 'stressHandling', section: '🧠 Experience & Self-Assessment', label: 'How do you handle high-stress situations or dealing with extremely toxic players?',                  hint: 'Give an example if you can.' },
+  { id: 'prevExp',        section: '🧠 Experience & Self-Assessment', label: 'What are your expectations of a staffing position?', hint: '' },
+  { id: 'whyServer',      section: '🧠 Experience & Self-Assessment', label: 'Why do you want to volunteer your time to becoming a member of the staff team?',                                 hint: '' },
+  { id: 'modVsAdmin',     section: '🧠 Experience & Self-Assessment', label: 'Do you have previous moderating, staffing or community management experience? If so, please detail.',               hint: '' },
+  { id: 'qualities',      section: '🧠 Experience & Self-Assessment', label: 'How do you currently contribute to fostering a positive and fun role-play experience for members of our community?',                   hint: '' },
+  { id: 'stressHandling', section: '🧠 Experience & Self-Assessment', label: 'Please provide an overview of your role-play experience across FiveM',                  hint: '' },
+  { id: 'stressHandling', section: '🧠 Experience & Self-Assessment', label: 'HPlease provide an overview of your role-play experience across FiveM',                  hint: '' },
   // ── Section 3: Scenario Questions ───────────────────────────────────────
   { id: 'scenarioA',      section: '⚠️ Scenario Questions',           label: 'Scenario A: You are in a sit with two players who are screaming over each other and trading OOC insults. Neither is letting the other speak. How do you de-escalate and resolve this?', hint: '' },
   { id: 'scenarioB',      section: '⚠️ Scenario Questions',           label: 'Scenario B: A close friend of yours on the server is caught clearly breaking a major rule (such as Combat Logging or VDM). No other staff are online. How do you handle this?',        hint: 'We are testing for bias — be honest.' },
