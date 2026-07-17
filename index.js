@@ -29,6 +29,9 @@ const APPLICATIONS_CHANNEL_ID = process.env.APPLICATIONS_CHANNEL_ID || '15276455
 // Role that can action (accept/decline) applications
 const APPLICATIONS_ROLE_ID = process.env.APPLICATIONS_ROLE_ID || '1515309451727470794'; // defaults to management role
 
+// In-memory draft store for multi-step application forms: userId → partial answers
+const applicationDrafts = new Map();
+
 // ---------------------------------------------------------------------------
 // Client setup
 // ---------------------------------------------------------------------------
@@ -180,6 +183,177 @@ async function createStaffChannel(ticket) {
 }
 
 // ---------------------------------------------------------------------------
+// Applications — question definitions (1 per modal step)
+// ---------------------------------------------------------------------------
+const APP_QUESTIONS = [
+  // ── Section 1: General Info ─────────────────────────────────────────────
+  {
+    id:          'ign',
+    section:     '📋 General Information',
+    label:       'In-Game Name & Discord Username',
+    style:       TextInputStyle.Short,
+    placeholder: 'e.g. John Smith | john_smith',
+    min: 2, max: 80,
+  },
+  {
+    id:          'steamHex',
+    section:     '📋 General Information',
+    label:       'Steam Hex / FiveM ID',
+    style:       TextInputStyle.Short,
+    placeholder: 'e.g. steam:110000112345678',
+    min: 4, max: 64,
+  },
+  {
+    id:          'dobTimezone',
+    section:     '📋 General Information',
+    label:       'Date of Birth & Timezone',
+    style:       TextInputStyle.Short,
+    placeholder: 'e.g. 01/01/2000 | AEST (UTC+10)',
+    min: 4, max: 64,
+  },
+  {
+    id:          'availability',
+    section:     '📋 General Information',
+    label:       'Avg. weekly hours for staff duties',
+    style:       TextInputStyle.Short,
+    placeholder: 'Be realistic — e.g. 15–20 hrs/week',
+    min: 2, max: 64,
+  },
+  // ── Section 2: Experience & Self-Assessment ──────────────────────────────
+  {
+    id:          'prevExp',
+    section:     '🧠 Experience & Self-Assessment',
+    label:       'Previous staff/moderation experience?',
+    style:       TextInputStyle.Paragraph,
+    placeholder: 'List server names, your rank, and why you left.\nWrite "None" if you have no prior experience.',
+    min: 4, max: 900,
+  },
+  {
+    id:          'whyServer',
+    section:     '🧠 Experience & Self-Assessment',
+    label:       'Why do you want to join our staff team?',
+    style:       TextInputStyle.Paragraph,
+    placeholder: 'Be specific to our server — what draws you to the team and what can you contribute?',
+    min: 50, max: 900,
+  },
+  {
+    id:          'modVsAdmin',
+    section:     '🧠 Experience & Self-Assessment',
+    label:       'Difference between Moderator & Admin?',
+    style:       TextInputStyle.Paragraph,
+    placeholder: 'In your own words, explain the difference between a Moderator and an Administrator.',
+    min: 30, max: 900,
+  },
+  {
+    id:          'qualities',
+    section:     '🧠 Experience & Self-Assessment',
+    label:       'What makes you a better fit than others?',
+    style:       TextInputStyle.Paragraph,
+    placeholder: 'What qualities do you possess that make you stand out as an applicant?',
+    min: 30, max: 900,
+  },
+  {
+    id:          'stressHandling',
+    section:     '🧠 Experience & Self-Assessment',
+    label:       'How do you handle toxic / high-stress sits?',
+    style:       TextInputStyle.Paragraph,
+    placeholder: 'How do you de-escalate toxic situations or manage extreme player behaviour? Give an example if you can.',
+    min: 30, max: 900,
+  },
+  // ── Section 3: Scenario Questions ───────────────────────────────────────
+  {
+    id:          'scenarioA',
+    section:     '⚠️ Scenario Questions',
+    label:       'Scenario A',
+    style:       TextInputStyle.Paragraph,
+    placeholder: 'You are in a sit with two players screaming OOC insults at each other. Neither is letting the other speak. How do you de-escalate and resolve this?',
+    min: 50, max: 900,
+  },
+  {
+    id:          'scenarioB',
+    section:     '⚠️ Scenario Questions',
+    label:       'Scenario B',
+    style:       TextInputStyle.Paragraph,
+    placeholder: 'A close friend of yours is caught clearly breaking a major rule (Combat Logging / VDM). No other staff are online. How do you handle this?',
+    min: 50, max: 900,
+  },
+  {
+    id:          'scenarioC',
+    section:     '⚠️ Scenario Questions',
+    label:       'Scenario C',
+    style:       TextInputStyle.Paragraph,
+    placeholder: 'You spectate a player suspected of using external cheats (aimbot, menu injection). What steps do you take to confirm your suspicions before taking any action?',
+    min: 50, max: 900,
+  },
+  {
+    id:          'scenarioD',
+    section:     '⚠️ Scenario Questions',
+    label:       'Scenario D',
+    style:       TextInputStyle.Paragraph,
+    placeholder: 'A player sends you a 15-second clip showing a rule break but NO context leading up to the event. They demand an immediate ban. What is your response?',
+    min: 50, max: 900,
+  },
+  {
+    id:          'scenarioE',
+    section:     '⚠️ Scenario Questions',
+    label:       'Scenario E',
+    style:       TextInputStyle.Paragraph,
+    placeholder: 'An admin ranked higher than you makes a decision mid-scene that clearly violates server rules. How do you handle this situation?',
+    min: 50, max: 900,
+  },
+  // ── Section 4: Rules & Knowledge ────────────────────────────────────────
+  {
+    id:          'rulesFailFear',
+    section:     '📖 Rules & Knowledge',
+    label:       'Define FailRP & FearRP',
+    style:       TextInputStyle.Paragraph,
+    placeholder: 'Define each term and give a brief in-game example.\n\nFailRP:\nFearRP:',
+    min: 30, max: 900,
+  },
+  {
+    id:          'rulesMetaPower',
+    section:     '📖 Rules & Knowledge',
+    label:       'Define Meta-gaming & Power-gaming',
+    style:       TextInputStyle.Paragraph,
+    placeholder: 'Define each term and give a brief in-game example.\n\nMeta-gaming:\nPower-gaming:',
+    min: 30, max: 900,
+  },
+  {
+    id:          'rulesRdmNlr',
+    section:     '📖 Rules & Knowledge',
+    label:       'Define RDM, VDM & New Life Rule',
+    style:       TextInputStyle.Paragraph,
+    placeholder: 'Define each term and give a brief in-game example.\n\nRDM:\nVDM:\nNew Life Rule (NLR):',
+    min: 30, max: 900,
+  },
+];
+
+/** Show a single-question modal for the given step index */
+function showAppQuestion(interaction, stepIndex) {
+  const q     = APP_QUESTIONS[stepIndex];
+  const total = APP_QUESTIONS.length;
+
+  const modal = new ModalBuilder()
+    .setCustomId(`app_q_${String(stepIndex).padStart(2, '0')}`)
+    .setTitle(`Staff Application (${stepIndex + 1}/${total})`);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('app_answer')
+        .setLabel(q.label)
+        .setStyle(q.style)
+        .setPlaceholder(q.placeholder)
+        .setRequired(true)
+        .setMinLength(q.min ?? 1)
+        .setMaxLength(q.max ?? 1000)
+    )
+  );
+
+  return interaction.showModal(modal);
+}
+
+// ---------------------------------------------------------------------------
 // Applications helpers
 // ---------------------------------------------------------------------------
 
@@ -217,34 +391,77 @@ function buildApplicationPanelPayload(open = true) {
   return { embeds: [embed], components: [row] };
 }
 
-/** Build the application result embed (shown in the applications channel) */
-function buildApplicationEmbed(app, status = 'pending') {
+/**
+ * Build the application embeds (shown in the applications channel).
+ * Returns an array of up to 4 embeds — one per section.
+ */
+function buildApplicationEmbeds(app, status = 'pending') {
   const statusMeta = {
-    pending:  { color: 0xFEE75C, label: '⏳ Pending Review'  },
-    accepted: { color: 0x57F287, label: '✅ Accepted'         },
-    declined: { color: 0xED4245, label: '❌ Declined'         },
-    hold:     { color: 0xEB459E, label: '🕐 On Hold'          },
+    pending:  { color: 0xFEE75C, badge: '⏳ Pending Review' },
+    accepted: { color: 0x57F287, badge: '✅ Accepted'        },
+    declined: { color: 0xED4245, badge: '❌ Declined'        },
+    hold:     { color: 0xEB459E, badge: '🕐 On Hold'         },
   };
-  const meta = statusMeta[status] ?? statusMeta.pending;
+  const { color, badge } = statusMeta[status] ?? statusMeta.pending;
+  const ts = Math.floor(new Date(app.submittedAt).getTime() / 1000);
+  const trim = (s, n = 1024) => (s ?? '—').slice(0, n);
 
-  const embed = new EmbedBuilder()
-    .setColor(meta.color)
-    .setTitle(`📋 Staff Application — APP-${app.id}`)
-    .setDescription(`**Status: ${meta.label}**`)
-    .addFields(
-      { name: '👤 Applicant',               value: `<@${app.userId}> (${app.username})`, inline: true },
-      { name: '🕐 Submitted',               value: `<t:${Math.floor(new Date(app.submittedAt).getTime() / 1000)}:R>`, inline: true },
-      { name: '\u200B',                      value: '\u200B', inline: true },
-      { name: '🎮 In-Game Name',             value: app.inGameName      || '—', inline: true },
-      { name: '🎂 Age',                      value: app.age             || '—', inline: true },
-      { name: '⏰ Hours / Week',             value: app.hoursPerWeek    || '—', inline: true },
-      { name: '💬 Why do you want to be staff?',    value: app.whyStaff.slice(0, 1024)     || '—' },
-      { name: '📁 Previous Experience',              value: app.experience.slice(0, 1024)   || '—' },
+  // ── Embed 1: Header + General Info ──────────────────────────────────────
+  const e1 = new EmbedBuilder()
+    .setColor(color)
+    .setTitle(`📋  Staff Application — APP-${app.id}`)
+    .setDescription(
+      `**Status: ${badge}**\n` +
+      `👤 <@${app.userId}>  ·  \`${app.username}\`  ·  Submitted <t:${ts}:R>` +
+      (app.reviewedBy ? `\n🔍 Reviewed by **${app.reviewedBy}**` : '')
     )
-    .setFooter({ text: `APP-${app.id}${app.reviewedBy ? ` · Reviewed by ${app.reviewedBy}` : ''}` })
+    .addFields(
+      { name: '🎮 In-Game Name',           value: trim(app.ign, 256),          inline: true },
+      { name: '🪪 Steam Hex / FiveM ID',   value: trim(app.steamHex, 256),     inline: true },
+      { name: '📅 DOB & Timezone',         value: trim(app.dobTimezone, 256),  inline: true },
+      { name: '⏰ Weekly Availability',    value: trim(app.availability, 256), inline: true },
+    )
+    .setFooter({ text: `APP-${app.id}  ·  Section 1 of 4 — General Information` })
     .setTimestamp();
 
-  return embed;
+  // ── Embed 2: Experience & Self-Assessment ────────────────────────────────
+  const e2 = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle('🧠  Section 2 — Experience & Self-Assessment')
+    .addFields(
+      { name: 'Previous Staff Experience',                value: trim(app.prevExp)        },
+      { name: 'Why Do You Want to Join Our Staff Team?',  value: trim(app.whyServer)      },
+      { name: 'Moderator vs Administrator',               value: trim(app.modVsAdmin)     },
+      { name: 'What Makes You a Better Fit?',             value: trim(app.qualities)      },
+      { name: 'Handling Toxic / High-Stress Situations',  value: trim(app.stressHandling) },
+    )
+    .setFooter({ text: `APP-${app.id}  ·  Section 2 of 4` });
+
+  // ── Embed 3: Scenario Questions ──────────────────────────────────────────
+  const e3 = new EmbedBuilder()
+    .setColor(0xED4245)
+    .setTitle('⚠️  Section 3 — Scenario Questions')
+    .addFields(
+      { name: 'Scenario A — OOC sit, players screaming over each other',             value: trim(app.scenarioA) },
+      { name: 'Scenario B — Close friend caught breaking a major rule',              value: trim(app.scenarioB) },
+      { name: 'Scenario C — Player suspected of using external cheats',              value: trim(app.scenarioC) },
+      { name: 'Scenario D — 15-sec clip with no context, demands instant ban',       value: trim(app.scenarioD) },
+      { name: 'Scenario E — Senior admin makes a call that breaks server rules',     value: trim(app.scenarioE) },
+    )
+    .setFooter({ text: `APP-${app.id}  ·  Section 3 of 4` });
+
+  // ── Embed 4: Rules & Knowledge ───────────────────────────────────────────
+  const e4 = new EmbedBuilder()
+    .setColor(0xFEE75C)
+    .setTitle('📖  Section 4 — Rules & Knowledge')
+    .addFields(
+      { name: 'FailRP & FearRP',               value: trim(app.rulesFailFear)  },
+      { name: 'Meta-gaming & Power-gaming',     value: trim(app.rulesMetaPower) },
+      { name: 'RDM, VDM & New Life Rule (NLR)', value: trim(app.rulesRdmNlr)   },
+    )
+    .setFooter({ text: `APP-${app.id}  ·  Section 4 of 4 — Rules & Knowledge` });
+
+  return [e1, e2, e3, e4];
 }
 
 /** Build the action row buttons for an application (pending = Accept/Decline/Hold; else locked) */
@@ -761,7 +978,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         const lines = apps.slice(-20).map(a =>
-          `**APP-${a.id}** · ${a.username} · ${a.inGameName} · \`${a.status}\` · <t:${Math.floor(new Date(a.submittedAt).getTime() / 1000)}:R>`
+          `**APP-${a.id}** · ${a.username} · ${a.ign ?? '—'} · \`${a.status}\` · <t:${Math.floor(new Date(a.submittedAt).getTime() / 1000)}:R>`
         );
 
         const embed = makeEmbed({
@@ -809,27 +1026,37 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── Modal submissions ────────────────────────────────────────────────────
-  if (interaction.isModalSubmit() && interaction.customId === 'apply_staff_modal') {
+  // ── Multi-step application modal submissions ─────────────────────────────
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('app_q_')) {
+    const stepIndex = parseInt(interaction.customId.replace('app_q_', ''), 10);
+    const answer    = interaction.fields.getTextInputValue('app_answer');
+    const q         = APP_QUESTIONS[stepIndex];
+
+    // Store answer in the in-memory draft
+    if (!applicationDrafts.has(interaction.user.id)) applicationDrafts.set(interaction.user.id, {});
+    applicationDrafts.get(interaction.user.id)[q.id] = answer;
+
+    const isLast = stepIndex === APP_QUESTIONS.length - 1;
+
+    if (!isLast) {
+      // Show next question
+      return showAppQuestion(interaction, stepIndex + 1);
+    }
+
+    // ── All questions answered — save to DB and post to channel ────────────
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-    const inGameName   = interaction.fields.getTextInputValue('app_ingame_name');
-    const age          = interaction.fields.getTextInputValue('app_age');
-    const whyStaff     = interaction.fields.getTextInputValue('app_why_staff');
-    const experience   = interaction.fields.getTextInputValue('app_experience');
-    const hoursPerWeek = interaction.fields.getTextInputValue('app_hours');
+    const answers = applicationDrafts.get(interaction.user.id);
+    applicationDrafts.delete(interaction.user.id);
 
-    // Create record
-    const app = appDb.createApplication(interaction.user.id, interaction.user.tag, {
-      inGameName, age, whyStaff, experience, hoursPerWeek,
-    });
+    const app = appDb.createApplication(interaction.user.id, interaction.user.tag, answers);
 
-    // Post embed to applications channel
     try {
       const appChannel = await client.channels.fetch(APPLICATIONS_CHANNEL_ID);
-      const embed = buildApplicationEmbed(app, 'pending');
+      const embeds  = buildApplicationEmbeds(app, 'pending');
       const buttons = buildApplicationButtons(app.id, 'pending');
-      const msg = await appChannel.send({ embeds: [embed], components: [buttons] });
+      // Send first embed with buttons, remaining embeds as follow-ups (Discord limit: 10 embeds per message)
+      const msg = await appChannel.send({ embeds, components: [buttons] });
       appDb.setMessageId(app.id, msg.id);
     } catch (err) {
       console.error('Failed to post application to channel:', err.message);
@@ -837,17 +1064,17 @@ client.on('interactionCreate', async interaction => {
 
     return interaction.editReply({
       content: [
-        `✅ **Application submitted!** (APP-${app.id})`,
+        `✅  **Application submitted!**  \`APP-${app.id}\``,
         '',
-        'Our management team will review your application and DM you with a decision.',
-        'Make sure your DMs are open!',
+        'Our management team will review your responses and contact you via DM with a decision.',
+        '> Make sure your DMs are open!',
       ].join('\n'),
     });
   }
 
   // ── Button interactions ──────────────────────────────────────────────────
   if (interaction.isButton()) {
-    // ── Apply for Staff panel button ────────────────────────────────────
+    // ── Apply for Staff panel button — starts question chain ────────────
     if (interaction.customId === 'apply_staff_panel') {
       if (!appDb.isOpen()) {
         return interaction.reply({ content: '❌ Applications are currently closed. Check back later!', flags: MessageFlags.Ephemeral });
@@ -856,61 +1083,9 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: '❌ You already have a pending application. Please wait for a decision before re-applying.', flags: MessageFlags.Ephemeral });
       }
 
-      const modal = new ModalBuilder()
-        .setCustomId('apply_staff_modal')
-        .setTitle('Next RP — Staff Application');
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('app_ingame_name')
-            .setLabel('What is your in-game name?')
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder('e.g. John Smith')
-            .setRequired(true)
-            .setMaxLength(64)
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('app_age')
-            .setLabel('How old are you?')
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder('e.g. 18')
-            .setRequired(true)
-            .setMaxLength(3)
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('app_why_staff')
-            .setLabel('Why do you want to be a staff member?')
-            .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder('Tell us why you want to join the team and what you can bring...')
-            .setRequired(true)
-            .setMinLength(80)
-            .setMaxLength(1000)
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('app_experience')
-            .setLabel('Previous moderation / staff experience?')
-            .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder('List any previous Discord moderation, FiveM staff, or similar experience...')
-            .setRequired(true)
-            .setMinLength(30)
-            .setMaxLength(1000)
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('app_hours')
-            .setLabel('Hours per week you can commit to the server?')
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder('e.g. 10-15 hours')
-            .setRequired(true)
-            .setMaxLength(32)
-        ),
-      );
-
-      return interaction.showModal(modal);
+      // Clear any stale draft and start from question 0
+      applicationDrafts.delete(interaction.user.id);
+      return showAppQuestion(interaction, 0);
     }
 
     // ── Application Accept / Decline / Hold buttons ─────────────────────
@@ -942,10 +1117,10 @@ client.on('interactionCreate', async interaction => {
       appDb.updateStatus(appId, action, interaction.user.tag);
       const updated = appDb.getApplication(appId);
 
-      // Update the embed in the applications channel
-      const updatedEmbed = buildApplicationEmbed(updated, action);
-      const updatedButtons = buildApplicationButtons(appId, action);
-      await interaction.message.edit({ embeds: [updatedEmbed], components: [updatedButtons] });
+      // Update the embeds in the applications channel
+      const updatedEmbeds   = buildApplicationEmbeds(updated, action);
+      const updatedButtons  = buildApplicationButtons(appId, action);
+      await interaction.message.edit({ embeds: updatedEmbeds, components: [updatedButtons] });
 
       // DM the applicant
       const dmMessages = {

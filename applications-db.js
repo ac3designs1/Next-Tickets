@@ -33,7 +33,14 @@ function setOpen(open) {
   write(db);
 }
 
-/** Create a new application, returns the application object */
+/**
+ * Create a new application from a fully completed multi-step form.
+ * answers shape:
+ *   Section 1: ign, steamHex, dobTimezone, availability
+ *   Section 2: prevExp, whyServer, modVsAdmin, qualities, stressHandling
+ *   Section 3: scenarioA, scenarioB, scenarioC, scenarioD, scenarioE
+ *   Section 4: rulesFailFear, rulesMetaPower, rulesRdmNlr, additionalInfo
+ */
 function createApplication(userId, username, answers) {
   const db = read();
   db.counter += 1;
@@ -44,11 +51,11 @@ function createApplication(userId, username, answers) {
     userId,
     username,
     ...answers,
-    status:       'pending',  // pending | accepted | declined | hold
-    reviewedBy:   null,
-    reviewedAt:   null,
-    messageId:    null,       // set after posting embed
-    submittedAt:  new Date().toISOString(),
+    status:      'pending',  // pending | accepted | declined | hold
+    reviewedBy:  null,
+    reviewedAt:  null,
+    messageId:   null,       // set after posting embed
+    submittedAt: new Date().toISOString(),
   };
 
   write(db);
