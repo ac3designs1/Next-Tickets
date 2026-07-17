@@ -1014,11 +1014,25 @@ client.on('interactionCreate', async interaction => {
       if (!appDb.isOpen()) {
         return interaction.reply({ content: '❌ Applications are currently closed. Check back later!', flags: MessageFlags.Ephemeral });
       }
-      if (appDb.hasPendingApplication(interaction.user.id)) {
-        return interaction.reply({ content: '❌ You already have a pending application. Please wait for a decision before re-applying.', flags: MessageFlags.Ephemeral });
-      }
       if (applicationDrafts.has(interaction.user.id)) {
-        return interaction.reply({ content: '❌ You already have an application in progress! Check your DMs.', flags: MessageFlags.Ephemeral });
+        return interaction.reply({ content: '❌ You already have an application in progress — check your DMs to continue.', flags: MessageFlags.Ephemeral });
+      }
+      if (appDb.hasPendingApplication(interaction.user.id)) {
+        const existing = appDb.getAllApplications().find(
+          a => a.userId === interaction.user.id && (a.status === 'pending' || a.status === 'hold')
+        );
+        const statusLine = existing?.status === 'hold'
+          ? 'Your application is currently **on hold** — management may reach out with questions.'
+          : 'Your application is currently **under review** — you will be notified once a decision is made.';
+        return interaction.reply({
+          embeds: [makeEmbed({
+            color: 0xFEE75C,
+            title: 'You Already Have an Open Application',
+            description: `${statusLine}\n\nYou cannot submit a new application until your current one has been resolved.`,
+            footer: existing ? `APP-${existing.id}` : null,
+          })],
+          flags: MessageFlags.Ephemeral,
+        });
       }
 
       // Test DMs are open before starting

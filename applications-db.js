@@ -103,10 +103,10 @@ function getAllApplications(status = null) {
   return status ? all.filter(a => a.status === status) : all;
 }
 
-/** Check if a user already has a pending application */
+/** Check if a user already has an active (pending or on-hold) application */
 function hasPendingApplication(userId) {
   return Object.values(read().applications).some(
-    a => a.userId === userId && a.status === 'pending'
+    a => a.userId === userId && (a.status === 'pending' || a.status === 'hold')
   );
 }
 
