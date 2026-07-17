@@ -373,86 +373,87 @@ function buildApplicationPanelPayload(open = true) {
 }
 
 /**
- * Build the application embeds (shown in the applications channel).
- * Returns an array of up to 4 embeds — one per section.
+ * Build the application embeds posted inside the dedicated application channel.
+ * Returns an array of embeds — one header + three answer sections.
  */
 function buildApplicationEmbeds(app, status = 'pending') {
   const statusMeta = {
-    pending:  { color: 0xFEE75C, badge: '⏳ Pending Review' },
-    accepted: { color: 0x57F287, badge: '✅ Accepted'        },
-    declined: { color: 0xED4245, badge: '❌ Declined'        },
-    hold:     { color: 0xEB459E, badge: '🕐 On Hold'         },
+    pending:  { color: 0xFEE75C, label: '⏳  Pending Review'  },
+    accepted: { color: 0x57F287, label: '✅  Accepted'         },
+    declined: { color: 0xED4245, label: '❌  Declined'         },
+    hold:     { color: 0xEB459E, label: '🕐  On Hold'          },
   };
-  const { color, badge } = statusMeta[status] ?? statusMeta.pending;
+  const { color, label } = statusMeta[status] ?? statusMeta.pending;
   const ts = Math.floor(new Date(app.submittedAt).getTime() / 1000);
-  const trim = (s, n = 1024) => (s ?? '—').slice(0, n);
+  const trim = (s, n = 1024) => String(s ?? '—').slice(0, n);
 
-  // ── Embed 1: Header + General Info ──────────────────────────────────────
-  const e1 = new EmbedBuilder()
+  // ── Overview ─────────────────────────────────────────────────────────────
+  const overview = new EmbedBuilder()
     .setColor(color)
-    .setTitle(`📋  Staff Application — APP-${app.id}`)
+    .setTitle(`APP-${app.id}  ·  Staff Application`)
     .setDescription(
-      `**Status: ${badge}**\n` +
-      `👤 <@${app.userId}>  ·  \`${app.username}\`  ·  Submitted <t:${ts}:R>` +
-      (app.reviewedBy ? `\n🔍 Reviewed by **${app.reviewedBy}**` : '')
+      [
+        `### ${label}`,
+        ``,
+        `**Applicant**   <@${app.userId}>  ·  \`${app.username}\``,
+        `**In-Game Name**   ${trim(app.ign, 64)}`,
+        `**Date of Birth & Timezone**   ${trim(app.dobTimezone, 64)}`,
+        `**Weekly Availability**   ${trim(app.availability, 64)}`,
+        ``,
+        `Submitted <t:${ts}:F>  ·  <t:${ts}:R>`,
+        app.reviewedBy ? `Reviewed by **${app.reviewedBy}**` : null,
+      ].filter(Boolean).join('\n')
     )
-    .addFields(
-      { name: '🎮 In-Game Name',        value: trim(app.ign, 256),          inline: true },
-      { name: '📅 DOB & Timezone',      value: trim(app.dobTimezone, 256),  inline: true },
-      { name: '⏰ Weekly Availability', value: trim(app.availability, 256), inline: true },
-    )
-    .setFooter({ text: `APP-${app.id}  ·  Section 1 of 4 — General Information` })
+    .setFooter({ text: 'Next RP  ·  Staff Applications' })
     .setTimestamp();
 
-  // ── Embed 2: Experience & Self-Assessment ────────────────────────────────
-  const e2 = new EmbedBuilder()
-    .setColor(0x5865F2)
-    .setTitle('🧠  Section 2 — Experience & Self-Assessment')
+  // ── Experience & Self-Assessment ─────────────────────────────────────────
+  const experience = new EmbedBuilder()
+    .setColor(0x23272A)
+    .setTitle('Experience & Self-Assessment')
     .addFields(
-      { name: 'Previous Staff Experience',                value: trim(app.prevExp)        },
-      { name: 'Why Do You Want to Join Our Staff Team?',  value: trim(app.whyServer)      },
-      { name: 'Moderator vs Administrator',               value: trim(app.modVsAdmin)     },
-      { name: 'What Makes You a Better Fit?',             value: trim(app.qualities)      },
-      { name: 'Handling Toxic / High-Stress Situations',  value: trim(app.stressHandling) },
-    )
-    .setFooter({ text: `APP-${app.id}  ·  Section 2 of 4` });
+      { name: 'Previous staff / moderation experience',            value: trim(app.prevExp)        },
+      { name: 'Why do you want to join the staff team?',           value: trim(app.whyServer)      },
+      { name: 'What is the difference between Mod and Admin?',     value: trim(app.modVsAdmin)     },
+      { name: 'What makes you a better fit than other applicants?',value: trim(app.qualities)      },
+      { name: 'How do you handle toxic or high-stress situations?', value: trim(app.stressHandling) },
+    );
 
-  // ── Embed 3: Scenario Questions ──────────────────────────────────────────
-  const e3 = new EmbedBuilder()
-    .setColor(0xED4245)
-    .setTitle('⚠️  Section 3 — Scenario Questions')
+  // ── Scenario Questions ───────────────────────────────────────────────────
+  const scenarios = new EmbedBuilder()
+    .setColor(0x23272A)
+    .setTitle('Scenario Questions')
     .addFields(
-      { name: 'Scenario A — OOC sit, players screaming over each other',             value: trim(app.scenarioA) },
-      { name: 'Scenario B — Close friend caught breaking a major rule',              value: trim(app.scenarioB) },
-      { name: 'Scenario C — Player suspected of using external cheats',              value: trim(app.scenarioC) },
-      { name: 'Scenario D — 15-sec clip with no context, demands instant ban',       value: trim(app.scenarioD) },
-      { name: 'Scenario E — Senior admin makes a call that breaks server rules',     value: trim(app.scenarioE) },
-    )
-    .setFooter({ text: `APP-${app.id}  ·  Section 3 of 4` });
+      { name: 'Scenario A  —  OOC sit, players screaming over each other',        value: trim(app.scenarioA) },
+      { name: 'Scenario B  —  Close friend caught breaking a major rule',          value: trim(app.scenarioB) },
+      { name: 'Scenario C  —  Player suspected of using external cheats',          value: trim(app.scenarioC) },
+      { name: 'Scenario D  —  15-sec clip, no context, demands instant ban',       value: trim(app.scenarioD) },
+      { name: 'Scenario E  —  Senior admin makes a call that breaks server rules', value: trim(app.scenarioE) },
+    );
 
-  // ── Embed 4: Rules & Knowledge ───────────────────────────────────────────
-  const e4 = new EmbedBuilder()
-    .setColor(0xFEE75C)
-    .setTitle('📖  Section 4 — Rules & Knowledge')
+  // ── Rules & Knowledge ────────────────────────────────────────────────────
+  const rules = new EmbedBuilder()
+    .setColor(0x23272A)
+    .setTitle('Rules & Knowledge')
     .addFields(
-      { name: 'FailRP & FearRP',               value: trim(app.rulesFailFear)  },
-      { name: 'Meta-gaming & Power-gaming',     value: trim(app.rulesMetaPower) },
-      { name: 'RDM, VDM & New Life Rule (NLR)', value: trim(app.rulesRdmNlr)   },
+      { name: 'FailRP & FearRP',                value: trim(app.rulesFailFear)  },
+      { name: 'Meta-gaming & Power-gaming',      value: trim(app.rulesMetaPower) },
+      { name: 'RDM, VDM & New Life Rule (NLR)',  value: trim(app.rulesRdmNlr)   },
     )
-    .setFooter({ text: `APP-${app.id}  ·  Section 4 of 4 — Rules & Knowledge` });
+    .setFooter({ text: `APP-${app.id}` });
 
-  return [e1, e2, e3, e4];
+  return [overview, experience, scenarios, rules];
 }
 
-/** Build the action row buttons for an application (pending = Accept/Decline/Hold; else locked) */
+/** Build the action row buttons for an application */
 function buildApplicationButtons(appId, status = 'pending') {
   if (status !== 'pending' && status !== 'hold') {
-    // Application resolved — show a single disabled "Reviewed" button
     return new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`app_noop_${appId}`)
-        .setLabel('Reviewed')
+        .setLabel('Application Reviewed')
         .setStyle(ButtonStyle.Secondary)
+        .setEmoji('🔒')
         .setDisabled(true)
     );
   }
@@ -470,7 +471,7 @@ function buildApplicationButtons(appId, status = 'pending') {
       .setEmoji('❌'),
     new ButtonBuilder()
       .setCustomId(`app_hold_${appId}`)
-      .setLabel('On Hold')
+      .setLabel('Place on Hold')
       .setStyle(ButtonStyle.Secondary)
       .setEmoji('🕐'),
   );
@@ -1042,6 +1043,19 @@ client.on('interactionCreate', async interaction => {
         try {
           // Create a dedicated channel for this application
           const appChannel = await createApplicationChannel(app);
+
+          // Opening message — clean intro before the embeds
+          await appChannel.send({
+            content: [
+              `<@&${APPLICATIONS_ROLE_ID}>  —  New staff application received.`,
+              ``,
+              `**Applicant:** <@${app.userId}>`,
+              `**Application ID:** \`APP-${app.id}\``,
+              ``,
+              `Use the buttons below to accept, decline, or place this application on hold.`,
+            ].join('\n'),
+          });
+
           const embeds  = buildApplicationEmbeds(app, 'pending');
           const buttons = buildApplicationButtons(app.id, 'pending');
           const msg = await appChannel.send({ embeds, components: [buttons] });
@@ -1103,59 +1117,61 @@ client.on('interactionCreate', async interaction => {
 
       appDb.updateStatus(appId, action, interaction.user.tag);
       const updated = appDb.getApplication(appId);
-
-      // Update the embeds and buttons in the application channel
-      const updatedEmbeds  = buildApplicationEmbeds(updated, action);
-      const updatedButtons = buildApplicationButtons(appId, action);
-      await interaction.message.edit({ embeds: updatedEmbeds, components: [updatedButtons] });
-
-      // Rename channel and move to resolved category
-      try {
-        const safeName = updated.username.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 16) || 'applicant';
-        const prefix = action === 'accepted' ? '✅' : action === 'declined' ? '❌' : '🕐';
-        await interaction.channel.setName(`${prefix}-${appId}-${safeName}`);
-        await interaction.channel.setTopic(`APP-${appId} | ${updated.username} | Status: ${action} | Reviewed by ${interaction.user.tag}`);
-        const resolvedCat = await getOrCreateCategory(
-          interaction.guild,
-          action === 'accepted' ? '✅ Accepted Applications' : action === 'declined' ? '❌ Declined Applications' : '🕐 On Hold Applications'
-        );
-        await interaction.channel.setParent(resolvedCat.id, { lockPermissions: false });
-      } catch (err) {
-        console.error('Failed to update application channel:', err.message);
-      }
-
       // DM the applicant
-      const dmMessages = {
-        accepted: [
-          '🎉 **Congratulations!** Your staff application for Next RP has been **accepted**.',
-          '',
-          'A member of management will be in touch shortly with next steps.',
-          'Welcome to the team!',
-        ].join('\n'),
-        declined: [
-          '❌ Thank you for your interest in joining the Next RP staff team.',
-          '',
-          'Unfortunately your application was **not successful** at this time.',
-          'You\'re welcome to apply again in the future.',
-        ].join('\n'),
-        hold: [
-          '🕐 Your staff application for Next RP has been placed **on hold**.',
-          '',
-          'Management may reach out to you with further questions.',
-        ].join('\n'),
+      const dmContent = {
+        accepted: {
+          color: 0x57F287,
+          title: 'Application Accepted',
+          body: [
+            `### Congratulations, ${updated.username.split('#')[0]}! 🎉`,
+            ``,
+            `Your staff application for **Next RP** has been accepted.`,
+            `A member of management will be in touch shortly with your next steps.`,
+            ``,
+            `Welcome to the team!`,
+          ].join('\n'),
+        },
+        declined: {
+          color: 0xED4245,
+          title: 'Application Unsuccessful',
+          body: [
+            `### Thank you for applying`,
+            ``,
+            `Unfortunately your staff application for **Next RP** was not successful at this time.`,
+            `You are welcome to apply again in the future.`,
+            ``,
+            `We appreciate the time and effort you put into your application.`,
+          ].join('\n'),
+        },
+        hold: {
+          color: 0xEB459E,
+          title: 'Application On Hold',
+          body: [
+            `### Your application has been placed on hold`,
+            ``,
+            `Management is still reviewing your staff application for **Next RP**.`,
+            `They may reach out with further questions — keep an eye on your DMs.`,
+          ].join('\n'),
+        },
       };
 
+      const { color: dmColor, title: dmTitle, body: dmBody } = dmContent[action] ?? dmContent.declined;
       const dmEmbed = makeEmbed({
-        color: action === 'accepted' ? Colors.Green : action === 'declined' ? Colors.Red : Colors.Fuchsia,
-        title: `📋 Staff Application — ${action === 'accepted' ? 'Accepted ✅' : action === 'declined' ? 'Declined ❌' : 'On Hold 🕐'}`,
-        description: dmMessages[action],
-        footer: `APP-${appId} · Next RP`,
+        color: dmColor,
+        title: `📋  ${dmTitle}`,
+        description: dmBody,
+        footer: `APP-${appId}  ·  Next RP`,
       });
 
       await tryDM(updated.userId, { embeds: [dmEmbed] });
 
+      const actionLabel = action === 'accepted' ? '✅ Accepted' : action === 'declined' ? '❌ Declined' : '🕐 On Hold';
       return interaction.followUp({
-        content: `✅ Application **APP-${appId}** marked as **${action}**. Applicant has been notified via DM.`,
+        embeds: [makeEmbed({
+          color: dmColor,
+          description: `**APP-${appId}** has been marked as **${actionLabel}**.\nApplicant has been notified via DM.`,
+          footer: `Reviewed by ${interaction.user.tag}`,
+        })],
         flags: MessageFlags.Ephemeral,
       });
     }
