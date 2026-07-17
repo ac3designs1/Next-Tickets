@@ -21,6 +21,7 @@ const {
 
 const db      = require('./database');
 const appDb   = require('./applications-db');
+const { deployCommands } = require('./deploy-commands');
 const DEPARTMENTS  = require('./departments.json');
 const QUICK_REPLIES = require('./quick-replies.json');
 
@@ -1385,6 +1386,6 @@ client.on('error', err => console.error('Client error:', err.message));
 process.on('unhandledRejection', err => console.error('Unhandled rejection:', err?.message ?? err));
 
 // ---------------------------------------------------------------------------
-// Login
+// Auto-deploy slash commands, then login
 // ---------------------------------------------------------------------------
-client.login(process.env.BOT_TOKEN);
+deployCommands().then(() => client.login(process.env.BOT_TOKEN));

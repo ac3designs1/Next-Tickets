@@ -61,28 +61,34 @@ const commands = [
   ),
 ].map(cmd => cmd.toJSON());
 
-const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
-
-(async () => {
+/** Deploy commands to one or both guilds. Returns true on success. */
+async function deployCommands() {
+  const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
   try {
-    console.log('Deploying slash commands...');
-
+    console.log('[Commands] Deploying slash commands...');
     await rest.put(
       Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.MAIN_GUILD_ID),
       { body: commands }
     );
-    console.log(`Commands deployed to MAIN guild (${process.env.MAIN_GUILD_ID})`);
+    console.log(`[Commands] ✅ Deployed to MAIN guild (${process.env.MAIN_GUILD_ID})`);
 
     if (process.env.STAFF_GUILD_ID && process.env.STAFF_GUILD_ID !== process.env.MAIN_GUILD_ID) {
       await rest.put(
         Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.STAFF_GUILD_ID),
         { body: commands }
       );
-      console.log(`Commands deployed to STAFF guild (${process.env.STAFF_GUILD_ID})`);
+      console.log(`[Commands] ✅ Deployed to STAFF guild (${process.env.STAFF_GUILD_ID})`);
     }
-
-    console.log('Done!');
+    return true;
   } catch (err) {
-    console.error(err);
+    console.error('[Commands] ❌ Failed to deploy:', err.message);
+    return false;
   }
-})();
+}
+
+// Allow running directly: node deploy-commands.js
+if (require.main === module) {
+  deployCommands().then(() => process.exit(0));
+}
+
+module.exports = { deployCommands };
