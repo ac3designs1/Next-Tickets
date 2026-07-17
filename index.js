@@ -1015,7 +1015,10 @@ client.on('interactionCreate', async interaction => {
         const app = appDb.createApplication(interaction.user.id, interaction.user.tag, answers);
 
         try {
-          const appChannel = await client.channels.fetch(APPLICATIONS_CHANNEL_ID);
+          const staffGuild = getStaffGuild();
+          const appChannel = staffGuild
+            ? (staffGuild.channels.cache.get(APPLICATIONS_CHANNEL_ID) ?? await staffGuild.channels.fetch(APPLICATIONS_CHANNEL_ID))
+            : await client.channels.fetch(APPLICATIONS_CHANNEL_ID);
           const embeds  = buildApplicationEmbeds(app, 'pending');
           const buttons = buildApplicationButtons(app.id, 'pending');
           const msg = await appChannel.send({ embeds, components: [buttons] });
