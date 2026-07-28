@@ -51,6 +51,24 @@ const commands = [
               { name: 'On Hold',  value: 'hold'     },
             )
         )
+    )
+    .addSubcommand(sub =>
+      sub.setName('review')
+        .setDescription('Re-post an application (with Accept/Decline buttons) in this channel')
+        .addStringOption(opt =>
+          opt.setName('id')
+            .setDescription('Application ID, e.g. 0001')
+            .setRequired(true)
+        )
+    )
+    .addSubcommand(sub =>
+      sub.setName('reopen')
+        .setDescription('Reset an application back to pending so it can be accepted/declined again')
+        .addStringOption(opt =>
+          opt.setName('id')
+            .setDescription('Application ID, e.g. 0005')
+            .setRequired(true)
+        )
     ),
 
   // Dynamically generate one command per quick reply

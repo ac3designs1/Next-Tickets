@@ -188,28 +188,52 @@ async function createStaffChannel(ticket) {
 // ---------------------------------------------------------------------------
 const APP_QUESTIONS = [
   // ── Section 1: General Info ──────────────────────────────────────────────
-  { id: 'ign',            section: '📋 General Information',         label: 'What is your in-game name?',                                                                         hint: 'e.g. John Smith' },
-  { id: 'dobTimezone',    section: '📋 General Information',         label: 'What is your date of birth? ',                                                           hint: 'e.g. 01/01/2000' },
-  { id: 'dobTimezone',    section: '📋 General Information',         label: 'What country do you live in?',                                                           hint: 'e.g. 01/01/2000' },
-  { id: 'availability',   section: '📋 General Information',         label: 'How many hours per week can you realistically dedicate to staff duties?',                            hint: 'Be honest — e.g. 15–20 hrs/week' },
+  { id: 'ign',          section: '📋 General Information',          label: 'What is your in-game name?',                                                                                         hint: 'e.g. John Smith' },
+  { id: 'dob',          section: '📋 General Information',          label: 'What is your date of birth?',                                                                                        hint: 'e.g. 01/01/2000' },
+  { id: 'country',      section: '📋 General Information',          label: 'What country do you live in?',                                                                                       hint: 'e.g. Australia' },
+  { id: 'availability', section: '📋 General Information',          label: 'How many hours per week can you realistically dedicate to staff duties?',                                             hint: 'Be honest — e.g. 15–20 hrs/week' },
   // ── Section 2: Experience & Self-Assessment ──────────────────────────────
-  { id: 'prevExp',        section: '🧠 Experience & Self-Assessment', label: 'What are your expectations of a staffing position?', hint: '' },
-  { id: 'whyServer',      section: '🧠 Experience & Self-Assessment', label: 'Why do you want to volunteer your time to becoming a member of the staff team?',                                 hint: '' },
-  { id: 'modVsAdmin',     section: '🧠 Experience & Self-Assessment', label: 'Do you have previous moderating, staffing or community management experience? If so, please detail.',               hint: '' },
-  { id: 'qualities',      section: '🧠 Experience & Self-Assessment', label: 'How do you currently contribute to fostering a positive and fun role-play experience for members of our community?',                   hint: '' },
-  { id: 'stressHandling', section: '🧠 Experience & Self-Assessment', label: 'Please provide an overview of your role-play experience across FiveM',                  hint: '' },
-  { id: 'stressHandling', section: '🧠 Experience & Self-Assessment', label: 'HPlease provide an overview of your role-play experience across FiveM',                  hint: '' },
+  { id: 'prevExp',      section: '🧠 Experience & Self-Assessment', label: 'What are your expectations of a staffing position?',                                                                  hint: '' },
+  { id: 'whyServer',    section: '🧠 Experience & Self-Assessment', label: 'Why do you want to volunteer your time to becoming a member of the staff team?',                                       hint: '' },
+  { id: 'modVsAdmin',   section: '🧠 Experience & Self-Assessment', label: 'Do you have previous moderating, staffing or community management experience? If so, please detail.',                  hint: '' },
+  { id: 'qualities',    section: '🧠 Experience & Self-Assessment', label: 'How do you currently contribute to fostering a positive and fun role-play experience for members of our community?',   hint: '' },
+  { id: 'rpExperience', section: '🧠 Experience & Self-Assessment', label: 'Please provide an overview of your role-play experience across FiveM.',                                               hint: '' },
   // ── Section 3: Scenario Questions ───────────────────────────────────────
-  { id: 'scenarioA',      section: '⚠️ Scenario Questions',           label: 'Scenario A: You are in a sit with two players who are screaming over each other and trading OOC insults. Neither is letting the other speak. How do you de-escalate and resolve this?', hint: '' },
-  { id: 'scenarioB',      section: '⚠️ Scenario Questions',           label: 'Scenario B: A close friend of yours on the server is caught clearly breaking a major rule (such as Combat Logging or VDM). No other staff are online. How do you handle this?',        hint: 'We are testing for bias — be honest.' },
-  { id: 'scenarioC',      section: '⚠️ Scenario Questions',           label: 'Scenario C: You spectate a player suspected of using external cheats (e.g. aimbot or menu-injecting). What steps do you take to confirm your suspicions before taking action?',        hint: '' },
-  { id: 'scenarioD',      section: '⚠️ Scenario Questions',           label: 'Scenario D: A player submits a clip showing a rule break, but the clip is only 15 seconds long and does not show the context leading up to the event. They demand an immediate ban. What is your response?', hint: '' },
-  { id: 'scenarioE',      section: '⚠️ Scenario Questions',           label: 'Scenario E: An admin higher in rank than you makes a decision during an active scene that clearly violates the server\'s established rules. How do you handle this?',                  hint: 'Think carefully about chain of command.' },
+  { id: 'scenarioA',      section: '⚠️ Scenario Questions',         label: 'Scenario A: You are in a sit with two players who are screaming over each other and trading OOC insults. Neither is letting the other speak. How do you de-escalate and resolve this?', hint: '' },
+  { id: 'scenarioB',      section: '⚠️ Scenario Questions',         label: 'Scenario B: A close friend of yours on the server is caught clearly breaking a major rule (such as Combat Logging or VDM). No other staff are online. How do you handle this?',        hint: 'We are testing for bias — be honest.' },
+  { id: 'scenarioC',      section: '⚠️ Scenario Questions',         label: 'Scenario C: You spectate a player suspected of using external cheats (e.g. aimbot or menu-injecting). What steps do you take to confirm your suspicions before taking action?',        hint: '' },
+  { id: 'scenarioD',      section: '⚠️ Scenario Questions',         label: 'Scenario D: A player submits a clip showing a rule break, but the clip is only 15 seconds long and does not show the context leading up to the event. They demand an immediate ban. What is your response?', hint: '' },
+  { id: 'scenarioE',      section: '⚠️ Scenario Questions',         label: 'Scenario E: An admin higher in rank than you makes a decision during an active scene that clearly violates the server\'s established rules. How do you handle this?',                  hint: 'Think carefully about chain of command.' },
   // ── Section 4: Rules & Knowledge ────────────────────────────────────────
-  { id: 'rulesFailFear',  section: '📖 Rules & Knowledge',            label: 'Briefly define FailRP and FearRP, and give an in-game example of each.',                           hint: 'Format: FailRP: [definition + example] | FearRP: [definition + example]' },
-  { id: 'rulesMetaPower', section: '📖 Rules & Knowledge',            label: 'Briefly define Meta-gaming and Power-gaming, and give an in-game example of each.',               hint: '' },
-  { id: 'rulesRdmNlr',    section: '📖 Rules & Knowledge',            label: 'Briefly define RDM, VDM and the New Life Rule (NLR), and give an in-game example of each.',       hint: '' },
+  { id: 'rulesFailFear',  section: '📖 Rules & Knowledge',          label: 'Briefly define FailRP and FearRP, and give an in-game example of each.',                                              hint: 'Format: FailRP: [definition + example] | FearRP: [definition + example]' },
+  { id: 'rulesMetaPower', section: '📖 Rules & Knowledge',          label: 'Briefly define Meta-gaming and Power-gaming, and give an in-game example of each.',                                  hint: '' },
+  { id: 'rulesRdmNlr',    section: '📖 Rules & Knowledge',          label: 'Briefly define RDM, VDM and the New Life Rule (NLR), and give an in-game example of each.',                          hint: '' },
 ];
+
+/** Long-form answer fields shown as their own embeds (avoids Discord's 6000-char multi-embed limit) */
+const APP_ANSWER_FIELDS = [
+  { id: 'prevExp',        title: 'Expectations of a staffing position' },
+  { id: 'whyServer',      title: 'Why volunteer for the staff team?' },
+  { id: 'modVsAdmin',     title: 'Previous moderating / staffing experience' },
+  { id: 'qualities',      title: 'How you contribute to positive RP' },
+  { id: 'rpExperience',   title: 'FiveM role-play experience overview', fallbackIds: ['stressHandling'] },
+  { id: 'scenarioA',      title: 'Scenario A — OOC sit, players screaming' },
+  { id: 'scenarioB',      title: 'Scenario B — Close friend breaking a major rule' },
+  { id: 'scenarioC',      title: 'Scenario C — Suspected cheater' },
+  { id: 'scenarioD',      title: 'Scenario D — Short clip, demands instant ban' },
+  { id: 'scenarioE',      title: 'Scenario E — Senior admin breaks server rules' },
+  { id: 'rulesFailFear',  title: 'FailRP & FearRP' },
+  { id: 'rulesMetaPower', title: 'Meta-gaming & Power-gaming' },
+  { id: 'rulesRdmNlr',    title: 'RDM, VDM & New Life Rule (NLR)' },
+];
+
+function getAppAnswer(app, field) {
+  if (app[field.id] != null && String(app[field.id]).trim() !== '') return app[field.id];
+  for (const alt of field.fallbackIds ?? []) {
+    if (app[alt] != null && String(app[alt]).trim() !== '') return app[alt];
+  }
+  return '—';
+}
 
 /**
  * Run the full application as a DM conversation.
@@ -375,10 +399,11 @@ function buildApplicationPanelPayload(open = true) {
 }
 
 /**
- * Build the application embeds posted inside the dedicated application channel.
- * Returns an array of embeds — one header + three answer sections.
+ * Build the overview embed for an application (status header + short bio fields).
+ * Long answers are posted separately — Discord caps ALL embeds in one message at 6000 chars,
+ * so packing every answer into one message was silently failing for detailed applications.
  */
-function buildApplicationEmbeds(app, status = 'pending') {
+function buildApplicationOverviewEmbed(app, status = 'pending') {
   const statusMeta = {
     pending:  { color: 0xFEE75C, label: '⏳  Pending Review'  },
     accepted: { color: 0x57F287, label: '✅  Accepted'         },
@@ -387,10 +412,10 @@ function buildApplicationEmbeds(app, status = 'pending') {
   };
   const { color, label } = statusMeta[status] ?? statusMeta.pending;
   const ts = Math.floor(new Date(app.submittedAt).getTime() / 1000);
-  const trim = (s, n = 1024) => String(s ?? '—').slice(0, n);
+  const trim = (s, n = 256) => String(s ?? '—').slice(0, n);
+  const dob = app.dob ?? app.dobTimezone;
 
-  // ── Overview ─────────────────────────────────────────────────────────────
-  const overview = new EmbedBuilder()
+  return new EmbedBuilder()
     .setColor(color)
     .setTitle(`APP-${app.id}  ·  Staff Application`)
     .setDescription(
@@ -399,7 +424,8 @@ function buildApplicationEmbeds(app, status = 'pending') {
         ``,
         `**Applicant**   <@${app.userId}>  ·  \`${app.username}\``,
         `**In-Game Name**   ${trim(app.ign, 64)}`,
-        `**Date of Birth & Timezone**   ${trim(app.dobTimezone, 64)}`,
+        `**Date of Birth**   ${trim(dob, 64)}`,
+        `**Country**   ${trim(app.country, 64)}`,
         `**Weekly Availability**   ${trim(app.availability, 64)}`,
         ``,
         `Submitted <t:${ts}:F>  ·  <t:${ts}:R>`,
@@ -408,43 +434,64 @@ function buildApplicationEmbeds(app, status = 'pending') {
     )
     .setFooter({ text: 'Next RP  ·  Staff Applications' })
     .setTimestamp();
+}
 
-  // ── Experience & Self-Assessment ─────────────────────────────────────────
-  const experience = new EmbedBuilder()
-    .setColor(0x23272A)
-    .setTitle('Experience & Self-Assessment')
-    .addFields(
-      { name: 'Previous staff / moderation experience',            value: trim(app.prevExp)        },
-      { name: 'Why do you want to join the staff team?',           value: trim(app.whyServer)      },
-      { name: 'What is the difference between Mod and Admin?',     value: trim(app.modVsAdmin)     },
-      { name: 'What makes you a better fit than other applicants?',value: trim(app.qualities)      },
-      { name: 'How do you handle toxic or high-stress situations?', value: trim(app.stressHandling) },
-    );
+/** One embed per answer — stays well under Discord limits even for max-length replies */
+function buildApplicationAnswerEmbeds(app) {
+  return APP_ANSWER_FIELDS.map(field => {
+    const answer = String(getAppAnswer(app, field)).slice(0, 4096) || '—';
+    return new EmbedBuilder()
+      .setColor(0x23272A)
+      .setTitle(field.title.slice(0, 256))
+      .setDescription(answer)
+      .setFooter({ text: `APP-${app.id}` });
+  });
+}
 
-  // ── Scenario Questions ───────────────────────────────────────────────────
-  const scenarios = new EmbedBuilder()
-    .setColor(0x23272A)
-    .setTitle('Scenario Questions')
-    .addFields(
-      { name: 'Scenario A  —  OOC sit, players screaming over each other',        value: trim(app.scenarioA) },
-      { name: 'Scenario B  —  Close friend caught breaking a major rule',          value: trim(app.scenarioB) },
-      { name: 'Scenario C  —  Player suspected of using external cheats',          value: trim(app.scenarioC) },
-      { name: 'Scenario D  —  15-sec clip, no context, demands instant ban',       value: trim(app.scenarioD) },
-      { name: 'Scenario E  —  Senior admin makes a call that breaks server rules', value: trim(app.scenarioE) },
-    );
+/** @deprecated kept for any callers expecting the old multi-embed array */
+function buildApplicationEmbeds(app, status = 'pending') {
+  return [buildApplicationOverviewEmbed(app, status), ...buildApplicationAnswerEmbeds(app)];
+}
 
-  // ── Rules & Knowledge ────────────────────────────────────────────────────
-  const rules = new EmbedBuilder()
-    .setColor(0x23272A)
-    .setTitle('Rules & Knowledge')
-    .addFields(
-      { name: 'FailRP & FearRP',                value: trim(app.rulesFailFear)  },
-      { name: 'Meta-gaming & Power-gaming',      value: trim(app.rulesMetaPower) },
-      { name: 'RDM, VDM & New Life Rule (NLR)',  value: trim(app.rulesRdmNlr)   },
-    )
-    .setFooter({ text: `APP-${app.id}` });
+/**
+ * Post overview, each answer, then a dedicated action-button message.
+ * Buttons are on their own short message so they still appear even if an answer post fails.
+ */
+async function postApplicationReviewMessages(appChannel, app) {
+  const status = app.status || 'pending';
 
-  return [overview, experience, scenarios, rules];
+  await appChannel.send({
+    content: [
+      `<@&${APPLICATIONS_ROLE_ID}>  —  Staff application ready for review.`,
+      ``,
+      `**Applicant:** <@${app.userId}>`,
+      `**Application ID:** \`APP-${app.id}\``,
+      `**Status:** \`${status}\``,
+      ``,
+      `Use the buttons at the bottom of this channel to accept, decline, or place on hold.`,
+    ].join('\n'),
+  });
+
+  await appChannel.send({ embeds: [buildApplicationOverviewEmbed(app, status)] });
+
+  for (const embed of buildApplicationAnswerEmbeds(app)) {
+    try {
+      await appChannel.send({ embeds: [embed] });
+    } catch (err) {
+      console.error(`Failed to post answer embed for APP-${app.id}:`, err.message);
+      await appChannel.send({
+        content: `⚠️ Could not display **${embed.data.title}** (Discord limit). Answer is still saved in the bot database.`,
+      }).catch(() => {});
+    }
+  }
+
+  const buttons = buildApplicationButtons(app.id, status);
+  const msg = await appChannel.send({
+    content: `**APP-${app.id}** — Accept, decline, or place this application on hold:`,
+    components: [buttons],
+  });
+  appDb.setChannelMessage(app.id, appChannel.id, msg.id);
+  return msg;
 }
 
 /** Build the action row buttons for an application */
@@ -960,18 +1007,55 @@ client.on('interactionCreate', async interaction => {
           return interaction.reply({ content: `No applications found${statusFilter ? ` with status **${statusFilter}**` : ''}.`, flags: MessageFlags.Ephemeral });
         }
 
-        const lines = apps.slice(-20).map(a =>
-          `**APP-${a.id}** · ${a.username} · ${a.ign ?? '—'} · \`${a.status}\` · <t:${Math.floor(new Date(a.submittedAt).getTime() / 1000)}:R>`
-        );
+        const lines = apps.slice(-20).map(a => {
+          const ch = a.channelId ? ` · <#${a.channelId}>` : ' · ⚠️ no channel';
+          return `**APP-${a.id}** · ${a.username} · ${a.ign ?? '—'} · \`${a.status}\`${ch} · <t:${Math.floor(new Date(a.submittedAt).getTime() / 1000)}:R>`;
+        });
 
         const embed = makeEmbed({
           color: 0x5865F2,
           title: `📋 Applications${statusFilter ? ` — ${statusFilter}` : ''}`,
           description: lines.join('\n'),
-          footer: `${apps.length} total${statusFilter ? ` · filtered by ${statusFilter}` : ''}`,
+          footer: `${apps.length} total${statusFilter ? ` · filtered by ${statusFilter}` : ''} · Use /applications review id:<id> to restore buttons`,
         });
 
         return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      }
+
+      if (sub === 'review') {
+        const rawId = interaction.options.getString('id', true).replace(/^APP-/i, '').trim();
+        const app = appDb.getApplication(rawId);
+        if (!app) {
+          return interaction.reply({ content: `❌ Application \`APP-${rawId}\` not found.`, flags: MessageFlags.Ephemeral });
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+        try {
+          await postApplicationReviewMessages(interaction.channel, app);
+          return interaction.editReply({
+            content: `✅ Re-posted **APP-${app.id}** (\`${app.status}\`) with answers and action buttons in this channel.`,
+          });
+        } catch (err) {
+          console.error('Failed to re-post application:', err.message);
+          return interaction.editReply({ content: `❌ Failed to re-post: ${err.message}` });
+        }
+      }
+
+      if (sub === 'reopen') {
+        const rawId = interaction.options.getString('id', true).replace(/^APP-/i, '').trim();
+        const app = appDb.getApplication(rawId);
+        if (!app) {
+          return interaction.reply({ content: `❌ Application \`APP-${rawId}\` not found.`, flags: MessageFlags.Ephemeral });
+        }
+
+        const previous = app.status;
+        appDb.reopenApplication(rawId);
+
+        return interaction.reply({
+          content: `✅ **APP-${rawId}** reopened (was \`${previous}\`). You can Accept / Decline / Hold it again.\nTip: run \`/applications review id:${rawId}\` in the app channel to refresh the buttons.`,
+          flags: MessageFlags.Ephemeral,
+        });
       }
     }
 
@@ -1060,22 +1144,8 @@ client.on('interactionCreate', async interaction => {
           // Create a dedicated channel for this application
           const appChannel = await createApplicationChannel(app);
 
-          // Opening message — clean intro before the embeds
-          await appChannel.send({
-            content: [
-              `<@&${APPLICATIONS_ROLE_ID}>  —  New staff application received.`,
-              ``,
-              `**Applicant:** <@${app.userId}>`,
-              `**Application ID:** \`APP-${app.id}\``,
-              ``,
-              `Use the buttons below to accept, decline, or place this application on hold.`,
-            ].join('\n'),
-          });
-
-          const embeds  = buildApplicationEmbeds(app, 'pending');
-          const buttons = buildApplicationButtons(app.id, 'pending');
-          const msg = await appChannel.send({ embeds, components: [buttons] });
-          appDb.setChannelMessage(app.id, appChannel.id, msg.id);
+          // Overview + each answer + action buttons (buttons are always posted last)
+          await postApplicationReviewMessages(appChannel, app);
 
           // DM the applicant — confirm receipt
           await tryDM(app.userId, {
@@ -1113,6 +1183,18 @@ client.on('interactionCreate', async interaction => {
           }
         } catch (err) {
           console.error('Failed to create application channel:', err.message);
+          // Application is already saved — try to notify management via log channel
+          try {
+            if (APPLICATIONS_CHANNEL_ID) {
+              const staffGuild = getStaffGuild();
+              const logChannel = staffGuild
+                ? (staffGuild.channels.cache.get(APPLICATIONS_CHANNEL_ID) ?? await staffGuild.channels.fetch(APPLICATIONS_CHANNEL_ID))
+                : await client.channels.fetch(APPLICATIONS_CHANNEL_ID);
+              await logChannel.send({
+                content: `⚠️ **APP-${app.id}** from **${app.username}** was saved but the review channel failed to post.\nError: \`${err.message}\`\nUse \`/applications list\` to see it — restart/redeploy may be needed to recover the channel.`,
+              });
+            }
+          } catch { /* best effort */ }
         }
       }).catch(err => {
         applicationDrafts.delete(interaction.user.id);
@@ -1138,16 +1220,45 @@ client.on('interactionCreate', async interaction => {
       await interaction.deferUpdate();
 
       let action, appId;
-      if (interaction.customId.startsWith('app_accept_'))  { action = 'accepted'; appId = interaction.customId.replace('app_accept_',  ''); }
-      if (interaction.customId.startsWith('app_decline_')) { action = 'declined'; appId = interaction.customId.replace('app_decline_', ''); }
-      if (interaction.customId.startsWith('app_hold_'))    { action = 'hold';     appId = interaction.customId.replace('app_hold_',    ''); }
+      // Parse from the end so IDs like 0005 stay exact (avoid fragile replace collisions)
+      if (interaction.customId.startsWith('app_accept_')) {
+        action = 'accepted';
+        appId = interaction.customId.slice('app_accept_'.length);
+      } else if (interaction.customId.startsWith('app_decline_')) {
+        action = 'declined';
+        appId = interaction.customId.slice('app_decline_'.length);
+      } else {
+        action = 'hold';
+        appId = interaction.customId.slice('app_hold_'.length);
+      }
+      appId = String(appId || '').replace(/^APP-/i, '').trim();
 
       const app = appDb.getApplication(appId);
-      if (!app) return interaction.followUp({ content: '❌ Application not found.', flags: MessageFlags.Ephemeral });
-      if (app.status !== 'pending' && app.status !== 'hold') {
-        return interaction.followUp({ content: '❌ This application has already been reviewed.', flags: MessageFlags.Ephemeral });
+      if (!app) {
+        return interaction.followUp({
+          content: `❌ Application \`APP-${appId || '?'}\` not found in the database.`,
+          flags: MessageFlags.Ephemeral,
+        });
       }
 
+      // Treat missing/unknown status as still open. Allow management to change a prior
+      // decision too — older builds updated the DB but left Accept/Decline looking pending.
+      const currentStatus = String(app.status || 'pending').toLowerCase();
+      if (currentStatus === action) {
+        try {
+          await interaction.message.edit({
+            content: `**APP-${appId}** — already **${action}**${app.reviewedBy ? ` by ${app.reviewedBy}` : ''}`,
+            embeds: [buildApplicationOverviewEmbed(app, action)],
+            components: [buildApplicationButtons(appId, action)],
+          });
+        } catch { /* message may be gone */ }
+        return interaction.followUp({
+          content: `ℹ️ **APP-${appId}** is already marked as **${action}**${app.reviewedBy ? ` by **${app.reviewedBy}**` : ''}. The message has been refreshed.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      const previousStatus = currentStatus;
       appDb.updateStatus(appId, action, interaction.user.tag);
       const updated = appDb.getApplication(appId);
       // DM the applicant
@@ -1199,10 +1310,34 @@ client.on('interactionCreate', async interaction => {
       await tryDM(updated.userId, { embeds: [dmEmbed] });
 
       const actionLabel = action === 'accepted' ? '✅ Accepted' : action === 'declined' ? '❌ Declined' : '🕐 On Hold';
+
+      // Always refresh the button message so Discord matches the database
+      try {
+        await interaction.message.edit({
+          content: `**APP-${appId}** — **${actionLabel}** by ${interaction.user.tag}`,
+          embeds: [buildApplicationOverviewEmbed(updated, action)],
+          components: [buildApplicationButtons(appId, action)],
+        });
+      } catch (err) {
+        console.error('Failed to update application action message:', err.message);
+      }
+
+      // Reflect status on the channel topic so it stays visible while pending/hold
+      try {
+        if (interaction.channel?.isTextBased?.() && interaction.channel.manageable) {
+          const topic = `Application APP-${appId} | Applicant: ${updated.username} (${updated.userId}) | Status: ${action}`;
+          await interaction.channel.setTopic(topic.slice(0, 1024));
+        }
+      } catch { /* topic optional */ }
+
+      const changedNote = (previousStatus !== 'pending' && previousStatus !== action)
+        ? `\n_(was previously \`${previousStatus}\`${app.reviewedBy ? ` by ${app.reviewedBy}` : ''})_`
+        : '';
+
       return interaction.followUp({
         embeds: [makeEmbed({
           color: dmColor,
-          description: `**APP-${appId}** has been marked as **${actionLabel}**.\nApplicant has been notified via DM.`,
+          description: `**APP-${appId}** has been marked as **${actionLabel}**.\nApplicant has been notified via DM.${changedNote}`,
           footer: `Reviewed by ${interaction.user.tag}`,
         })],
         flags: MessageFlags.Ephemeral,

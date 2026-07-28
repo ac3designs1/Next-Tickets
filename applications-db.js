@@ -36,10 +36,10 @@ function setOpen(open) {
 /**
  * Create a new application from a fully completed multi-step form.
  * answers shape:
- *   Section 1: ign, steamHex, dobTimezone, availability
- *   Section 2: prevExp, whyServer, modVsAdmin, qualities, stressHandling
+ *   Section 1: ign, dob, country, availability
+ *   Section 2: prevExp, whyServer, modVsAdmin, qualities, rpExperience
  *   Section 3: scenarioA, scenarioB, scenarioC, scenarioD, scenarioE
- *   Section 4: rulesFailFear, rulesMetaPower, rulesRdmNlr, additionalInfo
+ *   Section 4: rulesFailFear, rulesMetaPower, rulesRdmNlr
  */
 function createApplication(userId, username, answers) {
   const db = read();
@@ -92,6 +92,17 @@ function updateStatus(appId, status, reviewerTag) {
   return db.applications[appId];
 }
 
+/** Reset an application back to pending (clears reviewer metadata) */
+function reopenApplication(appId) {
+  const db = read();
+  if (!db.applications[appId]) return null;
+  db.applications[appId].status     = 'pending';
+  db.applications[appId].reviewedBy = null;
+  db.applications[appId].reviewedAt = null;
+  write(db);
+  return db.applications[appId];
+}
+
 /** Get an application by ID */
 function getApplication(appId) {
   return read().applications[appId] ?? null;
@@ -122,6 +133,7 @@ module.exports = {
   setMessageId,
   setChannelMessage,
   updateStatus,
+  reopenApplication,
   getApplication,
   getAllApplications,
   hasPendingApplication,
