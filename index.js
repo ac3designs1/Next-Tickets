@@ -21,9 +21,9 @@ const {
 
 const db      = require('./database');
 const appDb   = require('./applications-db');
+const qrDb    = require('./quick-replies-db');
 const { deployCommands } = require('./deploy-commands');
 const DEPARTMENTS  = require('./departments.json');
-const QUICK_REPLIES = require('./quick-replies.json');
 
 // Channel where submitted applications are posted (management-only channel in main guild)
 const APPLICATIONS_CHANNEL_ID = process.env.APPLICATIONS_CHANNEL_ID || '1527645538244100136';
@@ -70,6 +70,67 @@ async function tryDM(userId, payload) {
   } catch {
     return false;
   }
+}
+
+/** Resolve a ticket's staff channel, fetching if not cached */
+async function resolveTicketChannel(ticket) {
+  if (!ticket?.channelId) return null;
+  const staffGuild = getStaffGuild();
+  if (!staffGuild) return null;
+  return (
+    staffGuild.channels.cache.get(ticket.channelId)
+    ?? await staffGuild.channels.fetch(ticket.channelId).catch(() => null)
+  );
+}
+
+/** Highest department role for a guild member (for reply branding) */
+function getStaffRank(member) {
+  let highestDept = null;
+  if (member) {
+    for (let i = DEPARTMENTS.length - 1; i >= 0; i--) {
+      if (member.roles.cache.has(DEPARTMENTS[i].roleId)) {
+        highestDept = DEPARTMENTS[i];
+        break;
+      }
+    }
+  }
+  return {
+    rankLabel: highestDept ? `${highestDept.emoji} ${highestDept.name}` : 'Staff',
+    embedColor: highestDept?.color ?? Colors.Green,
+    highestDept,
+  };
+}
+
+/** Build file attachments from a Discord message for relay */
+function filesFromMessage(message) {
+  return [...message.attachments.values()].map(a => ({
+    attachment: a.url,
+    name: a.name || 'attachment',
+  }));
+}
+
+/**
+ * DM a ticket/application user from staff and log in-channel.
+ * Returns { dmSent }.
+ */
+async function sendStaffReplyToUser({ targetUserId, content, member, author, contextLabel, files = [] }) {
+  const { rankLabel, embedColor } = getStaffRank(member);
+  const staffDisplay = member?.displayName ?? author.username;
+  const description = String(content || '').slice(0, 4096) || '*(no text)*';
+
+  const userEmbed = makeEmbed({
+    color: embedColor,
+    title: null,
+    description,
+    footer: `${rankLabel}  ·  ${contextLabel}`,
+  });
+  userEmbed.setAuthor({ name: staffDisplay, iconURL: author.displayAvatarURL() });
+
+  const payload = { embeds: [userEmbed] };
+  if (files.length) payload.files = files;
+
+  const dmSent = await tryDM(targetUserId, payload);
+  return { dmSent, rankLabel, embedColor, staffDisplay, description };
 }
 
 /** Resolve the staff guild from env */
@@ -709,7 +770,10 @@ client.once('clientReady', async () => {
       description: [
         'All commands are used inside ticket channels in this server unless stated otherwise.',
         '',
-        '`/qr` — Send a quick reply to the user (dropdown menu)',
+        '`/qr send` — Send a saved quick reply to the user',
+        '`/qr add` — Add a new quick reply (form)',
+        '`/qr remove` — Remove a quick reply',
+        '`/qr list` — List all quick replies',
         '`/transfer` — Move the ticket to a specific department',
         '`/close` — Close the ticket and notify the user',
         '`/reopen` — Reopen a closed ticket',
@@ -727,12 +791,14 @@ client.once('clientReady', async () => {
     });
 
     // ── Embed 2: Quick Replies ──
-    const qrLines = QUICK_REPLIES.map(qr => `**${qr.label}**\n> ${qr.message}`);
+    const qrLines = qrDb.getAll().map(qr => `\`${qr.id}\` — **${qr.label}**\n> ${qr.message}`);
     const qrEmbed = makeEmbed({
       color: Colors.Green,
       title: '⚡ Quick Replies  —  `/qr`',
-      description: qrLines.join('\n\n'),
-      footer: 'Edit quick-replies.json to add or change these.',
+      description: qrLines.length
+        ? qrLines.join('\n\n').slice(0, 4096)
+        : 'No quick replies yet. Use `/qr add` to create one.',
+      footer: 'Add more anytime with /qr add — no bot restart needed.',
     });
 
     // ── Embed 3: Departments ──
@@ -765,6 +831,40 @@ client.once('clientReady', async () => {
 // ---------------------------------------------------------------------------
 client.on('interactionCreate', async interaction => {
   try {
+  // ── Autocomplete (quick reply pickers) ──────────────────────────────────
+  if (interaction.isAutocomplete()) {
+    if (interaction.commandName === 'qr') {
+      const focused = interaction.options.getFocused(true);
+      const q = String(focused.value || '').toLowerCase();
+      const choices = qrDb.getAll()
+        .filter(r => !q || r.id.includes(q) || r.label.toLowerCase().includes(q))
+        .slice(0, 25)
+        .map(r => ({
+          name: `${r.label} (${r.id})`.slice(0, 100),
+          value: r.id,
+        }));
+      return interaction.respond(choices);
+    }
+    return;
+  }
+
+  // ── Modal submit — add quick reply ──────────────────────────────────────
+  if (interaction.isModalSubmit() && interaction.customId === 'qr_add_modal') {
+    const id = interaction.fields.getTextInputValue('qr_id');
+    const label = interaction.fields.getTextInputValue('qr_label');
+    const message = interaction.fields.getTextInputValue('qr_message');
+    const result = qrDb.add(id, label, message);
+
+    if (!result.ok) {
+      return interaction.reply({ content: `❌ ${result.error}`, flags: MessageFlags.Ephemeral });
+    }
+
+    return interaction.reply({
+      content: `✅ Quick reply **${result.reply.label}** saved as \`${result.reply.id}\`.\nUse \`/qr send reply:${result.reply.id}\` in a ticket to send it.`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
   // ── Slash commands ──────────────────────────────────────────────────────
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
@@ -843,10 +943,20 @@ client.on('interactionCreate', async interaction => {
       });
 
       await interaction.channel.send({ embeds: [closeEmbed] });
-      await interaction.channel.setName(interaction.channel.name.replace('ticket-', 'closed-'));
-      await interaction.channel.setTopic(interaction.channel.topic?.replace('Status: open', 'Status: closed'));
-      const closedCat = await getOrCreateCategory(interaction.guild, '🔒 Closed Tickets');
-      await interaction.channel.setParent(closedCat.id, { lockPermissions: false });
+      try {
+        await interaction.channel.setName(interaction.channel.name.replace(/^ticket-/, 'closed-'));
+      } catch (err) {
+        console.error('Close rename failed (rate limit?):', err.message);
+      }
+      try {
+        await interaction.channel.setTopic((interaction.channel.topic || '').replace('Status: open', 'Status: closed'));
+      } catch { /* topic optional */ }
+      try {
+        const closedCat = await getOrCreateCategory(interaction.guild, '🔒 Closed Tickets');
+        await interaction.channel.setParent(closedCat.id, { lockPermissions: false });
+      } catch (err) {
+        console.error('Close move failed:', err.message);
+      }
 
       return interaction.editReply({ content: '✅ Ticket closed.' });
     }
@@ -876,15 +986,24 @@ client.on('interactionCreate', async interaction => {
       });
 
       await interaction.channel.send({ embeds: [reopenEmbed] });
-      await interaction.channel.setName(interaction.channel.name.replace('closed-', 'ticket-'));
-      await interaction.channel.setTopic(interaction.channel.topic?.replace('Status: closed', 'Status: open'));
-      // Move back to Unassigned or the department category
-      const reopenedTicket = db.getTicket(ticket.id);
-      const reopenDept = reopenedTicket?.department ? DEPARTMENTS.find(d => d.id === reopenedTicket.department) : null;
-      const reopenCat = reopenDept
-        ? await getDeptCategory(interaction.guild, reopenDept)
-        : await getUnassignedCategory(interaction.guild);
-      await interaction.channel.setParent(reopenCat.id, { lockPermissions: false });
+      try {
+        await interaction.channel.setName(interaction.channel.name.replace(/^closed-/, 'ticket-'));
+      } catch (err) {
+        console.error('Reopen rename failed (rate limit?):', err.message);
+      }
+      try {
+        await interaction.channel.setTopic((interaction.channel.topic || '').replace('Status: closed', 'Status: open'));
+      } catch { /* topic optional */ }
+      try {
+        const reopenedTicket = db.getTicket(ticket.id);
+        const reopenDept = reopenedTicket?.department ? DEPARTMENTS.find(d => d.id === reopenedTicket.department) : null;
+        const reopenCat = reopenDept
+          ? await getDeptCategory(interaction.guild, reopenDept)
+          : await getUnassignedCategory(interaction.guild);
+        await interaction.channel.setParent(reopenCat.id, { lockPermissions: false });
+      } catch (err) {
+        console.error('Reopen move failed:', err.message);
+      }
 
       return interaction.editReply({ content: '✅ Ticket reopened.' });
     }
@@ -912,11 +1031,125 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
 
-    // Individual quick reply commands (e.g. /hello, /resolved, /moreinfo)
-    const quickReplyCmd = QUICK_REPLIES.find(
+    // /qr — send / add / remove / list quick replies
+    if (commandName === 'qr') {
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === 'list') {
+        const all = qrDb.getAll();
+        if (!all.length) {
+          return interaction.reply({
+            content: 'No quick replies yet. Use `/qr add` to create one.',
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+        const lines = all.map(r => `**${r.label}** (\`${r.id}\`)\n> ${r.message}`);
+        return interaction.reply({
+          embeds: [makeEmbed({
+            color: Colors.Green,
+            title: `⚡ Quick Replies (${all.length})`,
+            description: lines.join('\n\n').slice(0, 4096),
+            footer: 'Send with /qr send · Add with /qr add',
+          })],
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === 'add') {
+        const modal = new ModalBuilder()
+          .setCustomId('qr_add_modal')
+          .setTitle('Add Quick Reply');
+
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('qr_id')
+              .setLabel('Short ID (for commands)')
+              .setStyle(TextInputStyle.Short)
+              .setPlaceholder('e.g. uwu_cafe')
+              .setRequired(true)
+              .setMaxLength(32)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('qr_label')
+              .setLabel('Display name')
+              .setStyle(TextInputStyle.Short)
+              .setPlaceholder('e.g. UwU Cafe Owners')
+              .setRequired(true)
+              .setMaxLength(100)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('qr_message')
+              .setLabel('Message sent to the user')
+              .setStyle(TextInputStyle.Paragraph)
+              .setPlaceholder('The full reply text…')
+              .setRequired(true)
+              .setMaxLength(2000)
+          ),
+        );
+
+        return interaction.showModal(modal);
+      }
+
+      if (sub === 'remove') {
+        const replyId = interaction.options.getString('reply', true);
+        const result = qrDb.remove(replyId);
+        if (!result.ok) {
+          return interaction.reply({ content: `❌ ${result.error}`, flags: MessageFlags.Ephemeral });
+        }
+        return interaction.reply({
+          content: `✅ Removed quick reply **${result.reply.label}** (\`${result.reply.id}\`).`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === 'send') {
+        const replyId = interaction.options.getString('reply', true);
+        const qr = qrDb.getById(replyId);
+        if (!qr) {
+          return interaction.reply({ content: `❌ Quick reply \`${replyId}\` not found.`, flags: MessageFlags.Ephemeral });
+        }
+
+        const ticket = db.getTicketByChannel(interaction.channelId);
+        if (!ticket) {
+          return interaction.reply({ content: '❌ Use this inside a ticket channel.', flags: MessageFlags.Ephemeral });
+        }
+        if (ticket.status === 'closed') {
+          return interaction.reply({ content: '❌ This ticket is closed. Use `/reopen` first.', flags: MessageFlags.Ephemeral });
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+        const member = interaction.member ?? await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+        const { dmSent, embedColor, staffDisplay, description } = await sendStaffReplyToUser({
+          targetUserId: ticket.userId,
+          content: qr.message,
+          member,
+          author: interaction.user,
+          contextLabel: `Ticket #${ticket.id}  ·  Next RP`,
+        });
+
+        const logEmbed = makeEmbed({
+          color: embedColor,
+          title: `⚡ Quick Reply — ${qr.label}`,
+          description,
+          footer: `Sent by ${staffDisplay} · ${dmSent ? 'Delivered ✅' : 'Failed ❌'}`,
+        });
+        await interaction.channel.send({ embeds: [logEmbed] });
+
+        return interaction.editReply({
+          content: dmSent ? `✅ Sent **${qr.label}** to the user.` : '❌ Could not DM the user — they may have DMs disabled.',
+        });
+      }
+    }
+
+    // Legacy individual quick reply commands (e.g. /hello) if still registered
+    const legacyQr = qrDb.getAll().find(
       qr => qr.id.toLowerCase().replace(/_/g, '') === commandName
     );
-    if (quickReplyCmd) {
+    if (legacyQr) {
       const ticket = db.getTicketByChannel(interaction.channelId);
       if (!ticket) return interaction.reply({ content: '❌ This is not a ticket channel.', flags: MessageFlags.Ephemeral });
       if (ticket.status === 'closed') return interaction.reply({ content: '❌ This ticket is closed.', flags: MessageFlags.Ephemeral });
@@ -924,28 +1157,22 @@ client.on('interactionCreate', async interaction => {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       const member = interaction.member ?? await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
-      let highestDept = null;
-      if (member) {
-        for (let i = DEPARTMENTS.length - 1; i >= 0; i--) {
-          if (member.roles.cache.has(DEPARTMENTS[i].roleId)) { highestDept = DEPARTMENTS[i]; break; }
-        }
-      }
-      const rankLabel = highestDept ? `${highestDept.emoji} ${highestDept.name}` : 'Staff';
-      const embedColor = highestDept?.color ?? Colors.Green;
-      const staffDisplayName = member?.displayName ?? interaction.user.username;
-
-      const userEmbed = makeEmbed({ color: embedColor, description: quickReplyCmd.message, footer: rankLabel });
-      userEmbed.setAuthor({ name: staffDisplayName, iconURL: interaction.user.displayAvatarURL() });
-
-      const dmSent = await tryDM(ticket.userId, { embeds: [userEmbed] });
-
-      const logEmbed = makeEmbed({
-        color: embedColor,
-        title: `⚡ Quick Reply — ${quickReplyCmd.label}`,
-        description: quickReplyCmd.message,
-        footer: `Sent by ${staffDisplayName} · ${dmSent ? 'Delivered ✅' : 'Failed ❌'}`,
+      const { dmSent, embedColor, staffDisplay, description } = await sendStaffReplyToUser({
+        targetUserId: ticket.userId,
+        content: legacyQr.message,
+        member,
+        author: interaction.user,
+        contextLabel: `Ticket #${ticket.id}  ·  Next RP`,
       });
-      await interaction.channel.send({ embeds: [logEmbed] });
+
+      await interaction.channel.send({
+        embeds: [makeEmbed({
+          color: embedColor,
+          title: `⚡ Quick Reply — ${legacyQr.label}`,
+          description,
+          footer: `Sent by ${staffDisplay} · ${dmSent ? 'Delivered ✅' : 'Failed ❌'}`,
+        })],
+      });
 
       return interaction.editReply({ content: dmSent ? '✅ Sent!' : '❌ Could not DM the user.' });
     }
@@ -1387,13 +1614,24 @@ client.on('interactionCreate', async interaction => {
         footer: `Ticket #${ticket.id}`,
       });
 
-      const channel = interaction.guild.channels.cache.get(ticket.channelId);
+      const channel = interaction.guild.channels.cache.get(ticket.channelId)
+        ?? await interaction.guild.channels.fetch(ticket.channelId).catch(() => null);
       if (channel) {
         await channel.send({ embeds: [closeEmbed] });
-        await channel.setName(channel.name.replace('ticket-', 'closed-'));
-        await channel.setTopic(channel.topic?.replace('Status: open', 'Status: closed'));
-        const closedCat = await getOrCreateCategory(interaction.guild, '🔒 Closed Tickets');
-        await channel.setParent(closedCat.id, { lockPermissions: false });
+        try {
+          await channel.setName(channel.name.replace(/^ticket-/, 'closed-'));
+        } catch (err) {
+          console.error('Close button rename failed:', err.message);
+        }
+        try {
+          await channel.setTopic((channel.topic || '').replace('Status: open', 'Status: closed'));
+        } catch { /* topic optional */ }
+        try {
+          const closedCat = await getOrCreateCategory(interaction.guild, '🔒 Closed Tickets');
+          await channel.setParent(closedCat.id, { lockPermissions: false });
+        } catch (err) {
+          console.error('Close button move failed:', err.message);
+        }
       }
 
       return interaction.editReply({ content: '✅ Ticket closed.' });
@@ -1462,6 +1700,7 @@ client.on('interactionCreate', async interaction => {
 // Event: messageCreate — handles both DMs and staff channel messages
 // ---------------------------------------------------------------------------
 client.on('messageCreate', async message => {
+  try {
   if (message.author.bot) return;
 
   // ── DM from user → forward to staff ticket channel ──────────────────────
@@ -1482,17 +1721,23 @@ client.on('messageCreate', async message => {
       });
     }
 
-    const staffGuild = getStaffGuild();
-    if (!staffGuild) return;
-
-    const channel = staffGuild.channels.cache.get(ticket.channelId);
-    if (!channel) return;
+    const channel = await resolveTicketChannel(ticket);
+    if (!channel) {
+      console.error(`Ticket #${ticket.id} channel missing (${ticket.channelId})`);
+      return message.reply({
+        embeds: [makeEmbed({
+          color: Colors.Red,
+          title: 'Ticket Channel Missing',
+          description: `Your ticket **#${ticket.id}** is open, but staff can\'t receive messages right now.\nPlease ping staff in the main server or open a new ticket after this one is closed.`,
+        })],
+      }).catch(() => {});
+    }
 
     // Build the forwarded message embed
     const fwdEmbed = makeEmbed({
       color: Colors.Blue,
       title: null,
-      description: message.content || '*(no text — see attachment below)*',
+      description: (message.content || '*(no text — see attachment below)*').slice(0, 4096),
       footer: `📨 ${message.author.tag} · Ticket #${ticket.id}`,
     });
 
@@ -1502,11 +1747,21 @@ client.on('messageCreate', async message => {
     });
 
     // Forward attachments too
-    const files = message.attachments.map(a => a.url);
-    await channel.send({ embeds: [fwdEmbed], files });
-
-    // Confirm receipt to user
-    await message.react('✅');
+    const files = filesFromMessage(message);
+    try {
+      await channel.send({ embeds: [fwdEmbed], files: files.length ? files : undefined });
+      await message.react('✅');
+    } catch (err) {
+      console.error(`Failed to forward DM for ticket #${ticket.id}:`, err.message);
+      await message.react('❌').catch(() => {});
+      await message.reply({
+        embeds: [makeEmbed({
+          color: Colors.Red,
+          title: 'Could Not Deliver',
+          description: 'Your message could not be delivered to staff. Please try again in a moment.',
+        })],
+      }).catch(() => {});
+    }
     return;
   }
 
@@ -1524,44 +1779,33 @@ client.on('messageCreate', async message => {
     }
 
     const replyContent = message.content.slice(1).trim();
-    if (!replyContent) return message.reply('⚠️ Message is empty after the `%` prefix.');
-
-    // Find the staff member's highest department role for display
-    const member = message.member ?? await message.guild.members.fetch(message.author.id).catch(() => null);
-    let highestDept = null;
-    if (member) {
-      for (let i = DEPARTMENTS.length - 1; i >= 0; i--) {
-        if (member.roles.cache.has(DEPARTMENTS[i].roleId)) {
-          highestDept = DEPARTMENTS[i];
-          break;
-        }
-      }
+    const files = filesFromMessage(message);
+    if (!replyContent && !files.length) {
+      return message.reply('⚠️ Message is empty after the `%` prefix.');
     }
 
-    const rankLabel    = highestDept ? `${highestDept.emoji} ${highestDept.name}` : 'Staff';
-    const embedColor   = highestDept?.color ?? Colors.Green;
-    const staffDisplay = member?.displayName ?? message.author.username;
-
+    const member = message.member ?? await message.guild.members.fetch(message.author.id).catch(() => null);
     const targetUserId = ticket ? ticket.userId : application.userId;
     const contextLabel = application ? `APP-${application.id}  ·  Next RP` : `Ticket #${ticket?.id}  ·  Next RP`;
 
-    const userEmbed = makeEmbed({
-      color: embedColor,
-      title: null,
-      description: replyContent,
-      footer: `${rankLabel}  ·  ${contextLabel}`,
+    const { dmSent } = await sendStaffReplyToUser({
+      targetUserId,
+      content: replyContent || '*(attachment)*',
+      member,
+      author: message.author,
+      contextLabel,
+      files,
     });
-    userEmbed.setAuthor({ name: staffDisplay, iconURL: message.author.displayAvatarURL() });
 
-    const files  = message.attachments.map(a => a.url);
-    const dmSent = await tryDM(targetUserId, { embeds: [userEmbed], files });
-
-    await message.react(dmSent ? '✅' : '❌');
+    await message.react(dmSent ? '✅' : '❌').catch(() => {});
     if (!dmSent) {
-      await message.reply('⚠️ Could not DM the user — they may have DMs disabled.');
+      await message.reply('⚠️ Could not DM the user — they may have DMs disabled.').catch(() => {});
     }
 
     return;
+  }
+  } catch (err) {
+    console.error('messageCreate error:', err?.message ?? err);
   }
 });
 

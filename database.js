@@ -26,8 +26,9 @@ function createTicket(userId, username) {
   const db = read();
   db.counter += 1;
   const ticketId = db.counter;
+  const key = String(ticketId);
 
-  db.tickets[ticketId] = {
+  db.tickets[key] = {
     id: ticketId,
     userId,
     username,
@@ -39,16 +40,17 @@ function createTicket(userId, username) {
   };
 
   write(db);
-  return db.tickets[ticketId];
+  return db.tickets[key];
 }
 
 // Attach a staff channel ID to a ticket
 function setTicketChannel(ticketId, channelId) {
   const db = read();
-  if (!db.tickets[ticketId]) return null;
-  db.tickets[ticketId].channelId = channelId;
+  const key = String(ticketId);
+  if (!db.tickets[key]) return null;
+  db.tickets[key].channelId = channelId;
   write(db);
-  return db.tickets[ticketId];
+  return db.tickets[key];
 }
 
 // Find ticket by the Discord channel it maps to
@@ -63,30 +65,33 @@ function getOpenTicketByUser(userId) {
   return Object.values(db.tickets).find(t => t.userId === userId && t.status === 'open') || null;
 }
 
-// Find ticket by ID
+// Find ticket by ID (JSON keys are strings; accept number or string)
 function getTicket(ticketId) {
   const db = read();
-  return db.tickets[ticketId] || null;
+  if (ticketId == null) return null;
+  return db.tickets[ticketId] || db.tickets[String(ticketId)] || null;
 }
 
 // Close a ticket
 function closeTicket(ticketId) {
   const db = read();
-  if (!db.tickets[ticketId]) return null;
-  db.tickets[ticketId].status = 'closed';
-  db.tickets[ticketId].closedAt = new Date().toISOString();
+  const key = String(ticketId);
+  if (!db.tickets[key]) return null;
+  db.tickets[key].status = 'closed';
+  db.tickets[key].closedAt = new Date().toISOString();
   write(db);
-  return db.tickets[ticketId];
+  return db.tickets[key];
 }
 
 // Reopen a ticket
 function reopenTicket(ticketId) {
   const db = read();
-  if (!db.tickets[ticketId]) return null;
-  db.tickets[ticketId].status = 'open';
-  db.tickets[ticketId].closedAt = null;
+  const key = String(ticketId);
+  if (!db.tickets[key]) return null;
+  db.tickets[key].status = 'open';
+  db.tickets[key].closedAt = null;
   write(db);
-  return db.tickets[ticketId];
+  return db.tickets[key];
 }
 
 // Get all tickets (optionally filter by status)
@@ -99,10 +104,11 @@ function getAllTickets(status = null) {
 // Set the department a ticket has been transferred to
 function setTicketDepartment(ticketId, departmentId) {
   const db = read();
-  if (!db.tickets[ticketId]) return null;
-  db.tickets[ticketId].department = departmentId;
+  const key = String(ticketId);
+  if (!db.tickets[key]) return null;
+  db.tickets[key].department = departmentId;
   write(db);
-  return db.tickets[ticketId];
+  return db.tickets[key];
 }
 
 module.exports = {

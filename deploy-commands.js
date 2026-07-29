@@ -1,6 +1,5 @@
 require('dotenv').config();
 const { REST, Routes, SlashCommandBuilder } = require('discord.js');
-const QUICK_REPLIES = require('./quick-replies.json');
 
 const commands = [
   new SlashCommandBuilder()
@@ -31,6 +30,38 @@ const commands = [
   new SlashCommandBuilder()
     .setName('transfer')
     .setDescription('Transfer this ticket to a specific department (staff only — run inside a ticket channel)'),
+
+  new SlashCommandBuilder()
+    .setName('qr')
+    .setDescription('Quick replies — send, add, remove, or list canned responses')
+    .addSubcommand(sub =>
+      sub.setName('send')
+        .setDescription('Send a quick reply to the user (use in a ticket channel)')
+        .addStringOption(opt =>
+          opt.setName('reply')
+            .setDescription('Which quick reply to send')
+            .setRequired(true)
+            .setAutocomplete(true)
+        )
+    )
+    .addSubcommand(sub =>
+      sub.setName('add')
+        .setDescription('Add a new quick reply (opens a form)')
+    )
+    .addSubcommand(sub =>
+      sub.setName('remove')
+        .setDescription('Remove a quick reply')
+        .addStringOption(opt =>
+          opt.setName('reply')
+            .setDescription('Which quick reply to remove')
+            .setRequired(true)
+            .setAutocomplete(true)
+        )
+    )
+    .addSubcommand(sub =>
+      sub.setName('list')
+        .setDescription('List all saved quick replies')
+    ),
 
   new SlashCommandBuilder()
     .setName('applications')
@@ -70,13 +101,6 @@ const commands = [
             .setRequired(true)
         )
     ),
-
-  // Dynamically generate one command per quick reply
-  ...QUICK_REPLIES.map(qr =>
-    new SlashCommandBuilder()
-      .setName(qr.id.toLowerCase().replace(/_/g, ''))
-      .setDescription(`Quick reply: ${qr.label}`)
-  ),
 ].map(cmd => cmd.toJSON());
 
 /** Deploy commands to one or both guilds. Returns true on success. */
