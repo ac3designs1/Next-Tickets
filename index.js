@@ -101,12 +101,54 @@ function getStaffRank(member) {
   };
 }
 
-/** Build file attachments from a Discord message for relay */
-function filesFromMessage(message) {
-  return [...message.attachments.values()].map(a => ({
-    attachment: a.url,
-    name: a.name || 'attachment',
-  }));
+/** Modal form used by /qr add and the Add Quick Reply button */
+function buildQrAddModal() {
+  const modal = new ModalBuilder()
+    .setCustomId('qr_add_modal')
+    .setTitle('Add Quick Reply');
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('qr_id')
+        .setLabel('Short ID (for commands)')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('e.g. uwu_cafe')
+        .setRequired(true)
+        .setMaxLength(32)
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('qr_label')
+        .setLabel('Display name')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('e.g. UwU Cafe Owners')
+        .setRequired(true)
+        .setMaxLength(100)
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('qr_message')
+        .setLabel('Message sent to the user')
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder('The full reply text…')
+        .setRequired(true)
+        .setMaxLength(2000)
+    ),
+  );
+
+  return modal;
+}
+
+/** Button row that opens the add-quick-reply modal */
+function buildQrAddButtonRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('qr_add_btn')
+      .setLabel('Add Quick Reply')
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji('⚡')
+  );
 }
 
 /**
@@ -1056,41 +1098,7 @@ client.on('interactionCreate', async interaction => {
       }
 
       if (sub === 'add') {
-        const modal = new ModalBuilder()
-          .setCustomId('qr_add_modal')
-          .setTitle('Add Quick Reply');
-
-        modal.addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('qr_id')
-              .setLabel('Short ID (for commands)')
-              .setStyle(TextInputStyle.Short)
-              .setPlaceholder('e.g. uwu_cafe')
-              .setRequired(true)
-              .setMaxLength(32)
-          ),
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('qr_label')
-              .setLabel('Display name')
-              .setStyle(TextInputStyle.Short)
-              .setPlaceholder('e.g. UwU Cafe Owners')
-              .setRequired(true)
-              .setMaxLength(100)
-          ),
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('qr_message')
-              .setLabel('Message sent to the user')
-              .setStyle(TextInputStyle.Paragraph)
-              .setPlaceholder('The full reply text…')
-              .setRequired(true)
-              .setMaxLength(2000)
-          ),
-        );
-
-        return interaction.showModal(modal);
+        return interaction.showModal(buildQrAddModal());
       }
 
       if (sub === 'remove') {
@@ -1571,6 +1579,11 @@ client.on('interactionCreate', async interaction => {
       });
     }
 
+    // Add quick reply button → open modal
+    if (interaction.customId === 'qr_add_btn') {
+      return interaction.showModal(buildQrAddModal());
+    }
+
     // Open ticket from panel button
     if (interaction.customId === 'open_ticket_panel') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -1765,8 +1778,37 @@ client.on('messageCreate', async message => {
     return;
   }
 
-  // ── Staff message in ticket / application channel with % prefix → DM user ─
+  // ── Staff guild helpers: plain-text /qr fallback + % replies ────────────
   if (message.guild && message.guild.id === process.env.STAFF_GUILD_ID) {
+    const text = message.content.trim().toLowerCase();
+
+    // People often type "/qr add" as normal text — Discord slash commands only
+    // work when picked from the popup. Offer a button that opens the form.
+    if (text === '/qr add' || text === '!qr add' || text === 'qr add') {
+      return message.reply({
+        content: 'Click the button below to add a quick reply (or type `/` and choose **qr → add** from the slash menu after the bot is updated):',
+        components: [buildQrAddButtonRow()],
+      });
+    }
+
+    if (text === '/qr list' || text === '!qr list' || text === 'qr list') {
+      const all = qrDb.getAll();
+      if (!all.length) {
+        return message.reply({
+          content: 'No quick replies yet. Type `qr add` or use `/qr add` to create one.',
+          components: [buildQrAddButtonRow()],
+        });
+      }
+      const lines = all.map(r => `**${r.label}** (\`${r.id}\`)\n> ${r.message}`);
+      return message.reply({
+        embeds: [makeEmbed({
+          color: Colors.Green,
+          title: `⚡ Quick Replies (${all.length})`,
+          description: lines.join('\n\n').slice(0, 4096),
+        })],
+      });
+    }
+
     if (!message.content.startsWith('%')) return; // internal note, do nothing
 
     const ticket = db.getTicketByChannel(message.channelId);
