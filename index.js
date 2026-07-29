@@ -1778,35 +1778,104 @@ client.on('messageCreate', async message => {
     return;
   }
 
-  // ── Staff guild helpers: plain-text /qr fallback + % replies ────────────
+  // ── Staff guild helpers: plain-text qr commands + % replies ─────────────
   if (message.guild && message.guild.id === process.env.STAFF_GUILD_ID) {
-    const text = message.content.trim().toLowerCase();
+    const raw = message.content.trim();
+    const text = raw.toLowerCase();
+    const qrMatch = text.match(/^[\/!]?qr(?:\s+(.*))?$/);
 
-    // People often type "/qr add" as normal text — Discord slash commands only
-    // work when picked from the popup. Offer a button that opens the form.
-    if (text === '/qr add' || text === '!qr add' || text === 'qr add') {
-      return message.reply({
-        content: 'Click the button below to add a quick reply (or type `/` and choose **qr → add** from the slash menu after the bot is updated):',
-        components: [buildQrAddButtonRow()],
-      });
-    }
+    if (qrMatch) {
+      const args = (qrMatch[1] || '').trim();
+      const [action, ...rest] = args.split(/\s+/).filter(Boolean);
+      const restJoined = rest.join(' ').trim();
 
-    if (text === '/qr list' || text === '!qr list' || text === 'qr list') {
-      const all = qrDb.getAll();
-      if (!all.length) {
+      // qr / qr help
+      if (!action || action === 'help') {
         return message.reply({
-          content: 'No quick replies yet. Type `qr add` or use `/qr add` to create one.',
+          embeds: [makeEmbed({
+            color: Colors.Green,
+            title: '⚡ Quick Replies',
+            description: [
+              '**Add a reply**',
+              '`qr add` — opens a button, then a form',
+              '',
+              '**Use a reply** (in a ticket channel)',
+              '`qr send hello`',
+              '`qr send uwu_cafe`',
+              '',
+              '**Manage**',
+              '`qr list`',
+              '`qr remove hello`',
+              '',
+              '_Slash `/qr` appears after the bot is restarted with the latest update._',
+            ].join('\n'),
+          })],
           components: [buildQrAddButtonRow()],
         });
       }
-      const lines = all.map(r => `**${r.label}** (\`${r.id}\`)\n> ${r.message}`);
-      return message.reply({
-        embeds: [makeEmbed({
-          color: Colors.Green,
-          title: `⚡ Quick Replies (${all.length})`,
-          description: lines.join('\n\n').slice(0, 4096),
-        })],
-      });
+
+      if (action === 'add') {
+        return message.reply({
+          content: 'Click **Add Quick Reply** to open the form:',
+          components: [buildQrAddButtonRow()],
+        });
+      }
+
+      if (action === 'list') {
+        const all = qrDb.getAll();
+        if (!all.length) {
+          return message.reply({
+            content: 'No quick replies yet. Type `qr add` to create one.',
+            components: [buildQrAddButtonRow()],
+          });
+        }
+        const lines = all.map(r => `**${r.label}** (\`${r.id}\`)\n> ${r.message}`);
+        return message.reply({
+          embeds: [makeEmbed({
+            color: Colors.Green,
+            title: `⚡ Quick Replies (${all.length})`,
+            description: lines.join('\n\n').slice(0, 4096),
+          })],
+        });
+      }
+
+      if (action === 'remove') {
+        if (!restJoined) return message.reply('Usage: `qr remove <id>` — e.g. `qr remove hello`');
+        const result = qrDb.remove(restJoined);
+        if (!result.ok) return message.reply(`❌ ${result.error}`);
+        return message.reply(`✅ Removed **${result.reply.label}** (\`${result.reply.id}\`).`);
+      }
+
+      if (action === 'send') {
+        if (!restJoined) return message.reply('Usage: `qr send <id>` — e.g. `qr send hello`');
+        const qr = qrDb.getById(restJoined);
+        if (!qr) return message.reply(`❌ No quick reply \`${restJoined}\`. Try \`qr list\`.`);
+
+        const ticket = db.getTicketByChannel(message.channelId);
+        if (!ticket) return message.reply('❌ Use `qr send` inside a ticket channel.');
+        if (ticket.status === 'closed') return message.reply('❌ Ticket is closed. Use `/reopen` first.');
+
+        const member = message.member ?? await message.guild.members.fetch(message.author.id).catch(() => null);
+        const { dmSent, embedColor, staffDisplay, description } = await sendStaffReplyToUser({
+          targetUserId: ticket.userId,
+          content: qr.message,
+          member,
+          author: message.author,
+          contextLabel: `Ticket #${ticket.id}  ·  Next RP`,
+        });
+
+        await message.channel.send({
+          embeds: [makeEmbed({
+            color: embedColor,
+            title: `⚡ Quick Reply — ${qr.label}`,
+            description,
+            footer: `Sent by ${staffDisplay} · ${dmSent ? 'Delivered ✅' : 'Failed ❌'}`,
+          })],
+        });
+        return message.reply(dmSent ? `✅ Sent **${qr.label}**.` : '❌ Could not DM the user.');
+      }
+
+      return message.reply('Unknown qr command. Try `qr help`.');
     }
 
     if (!message.content.startsWith('%')) return; // internal note, do nothing
@@ -1860,4 +1929,10 @@ process.on('unhandledRejection', err => console.error('Unhandled rejection:', er
 // ---------------------------------------------------------------------------
 // Auto-deploy slash commands, then login
 // ---------------------------------------------------------------------------
-deployCommands().then(() => client.login(process.env.BOT_TOKEN));
+deployCommands().then(ok => {
+  if (!ok) console.error('[Boot] Slash command deploy failed — plain-text `qr add` / `qr send` still work after login.');
+  return client.login(process.env.BOT_TOKEN);
+}).catch(err => {
+  console.error('[Boot] Failed to start:', err?.message ?? err);
+  process.exit(1);
+});
