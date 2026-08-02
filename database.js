@@ -7,18 +7,42 @@ function ensureDataDir() {
   const dir = path.dirname(DB_PATH);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   if (!fs.existsSync(DB_PATH)) {
-    fs.writeFileSync(DB_PATH, JSON.stringify({ tickets: {}, counter: 0 }, null, 2));
+    atomicWrite(DB_PATH, JSON.stringify({ tickets: {}, counter: 0 }, null, 2));
   }
+}
+
+/** Write atomically so a crash mid-write cannot wipe the ticket DB */
+function atomicWrite(filePath, contents) {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmp = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, contents);
+  fs.renameSync(tmp, filePath);
 }
 
 function read() {
   ensureDataDir();
-  return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+  try {
+    const raw = fs.readFileSync(DB_PATH, 'utf8');
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object') throw new Error('invalid db shape');
+    if (!data.tickets || typeof data.tickets !== 'object') data.tickets = {};
+    if (typeof data.counter !== 'number' || !Number.isFinite(data.counter)) data.counter = 0;
+    return data;
+  } catch (err) {
+    // Corrupt/empty file — try backup, otherwise start fresh but keep a copy
+    const bak = `${DB_PATH}.corrupt.${Date.now()}`;
+    try { fs.copyFileSync(DB_PATH, bak); } catch { /* ignore */ }
+    console.error(`tickets.json unreadable (${err.message}); starting empty. Backup: ${bak}`);
+    const empty = { tickets: {}, counter: 0 };
+    atomicWrite(DB_PATH, JSON.stringify(empty, null, 2));
+    return empty;
+  }
 }
 
 function write(data) {
   ensureDataDir();
-  fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+  atomicWrite(DB_PATH, JSON.stringify(data, null, 2));
 }
 
 // Create a new ticket, returns the ticket object
@@ -30,7 +54,7 @@ function createTicket(userId, username) {
 
   db.tickets[key] = {
     id: ticketId,
-    userId,
+    userId: String(userId),
     username,
     channelId: null,
     status: 'open',
@@ -62,7 +86,8 @@ function getTicketByChannel(channelId) {
 // Find the open ticket for a user (each user can have one open ticket at a time)
 function getOpenTicketByUser(userId) {
   const db = read();
-  return Object.values(db.tickets).find(t => t.userId === userId && t.status === 'open') || null;
+  const uid = String(userId);
+  return Object.values(db.tickets).find(t => String(t.userId) === uid && t.status === 'open') || null;
 }
 
 // Find ticket by ID (JSON keys are strings; accept number or string)
@@ -111,6 +136,38 @@ function setTicketDepartment(ticketId, departmentId) {
   return db.tickets[key];
 }
 
+/**
+ * Insert or update a ticket record (used when recovering from Discord channels).
+ * Never lowers the counter.
+ */
+function upsertTicket(ticket) {
+  if (!ticket || ticket.id == null) return null;
+  const db = read();
+  const key = String(ticket.id);
+  const prev = db.tickets[key] || {};
+  const idNum = Number(ticket.id);
+
+  db.tickets[key] = {
+    id: idNum,
+    userId: String(ticket.userId ?? prev.userId ?? ''),
+    username: ticket.username ?? prev.username ?? 'unknown',
+    channelId: ticket.channelId ?? prev.channelId ?? null,
+    status: ticket.status === 'closed' ? 'closed' : 'open',
+    department: ticket.department ?? prev.department ?? null,
+    createdAt: prev.createdAt || ticket.createdAt || new Date().toISOString(),
+    closedAt: (ticket.status === 'closed')
+      ? (ticket.closedAt || prev.closedAt || new Date().toISOString())
+      : null,
+  };
+
+  if (Number.isFinite(idNum) && idNum > db.counter) {
+    db.counter = idNum;
+  }
+
+  write(db);
+  return db.tickets[key];
+}
+
 module.exports = {
   createTicket,
   setTicketChannel,
@@ -121,4 +178,5 @@ module.exports = {
   closeTicket,
   reopenTicket,
   getAllTickets,
+  upsertTicket,
 };

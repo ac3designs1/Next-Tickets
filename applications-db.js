@@ -3,22 +3,44 @@ const path = require('path');
 
 const DB_PATH = path.join(__dirname, 'data', 'applications.json');
 
+function atomicWrite(filePath, contents) {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmp = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, contents);
+  fs.renameSync(tmp, filePath);
+}
+
 function ensureDataDir() {
   const dir = path.dirname(DB_PATH);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   if (!fs.existsSync(DB_PATH)) {
-    fs.writeFileSync(DB_PATH, JSON.stringify({ applications: {}, counter: 0, open: true }, null, 2));
+    atomicWrite(DB_PATH, JSON.stringify({ applications: {}, counter: 0, open: true }, null, 2));
   }
 }
 
 function read() {
   ensureDataDir();
-  return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+  try {
+    const data = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+    if (!data || typeof data !== 'object') throw new Error('invalid db shape');
+    if (!data.applications || typeof data.applications !== 'object') data.applications = {};
+    if (typeof data.counter !== 'number') data.counter = 0;
+    if (typeof data.open !== 'boolean') data.open = true;
+    return data;
+  } catch (err) {
+    const bak = `${DB_PATH}.corrupt.${Date.now()}`;
+    try { fs.copyFileSync(DB_PATH, bak); } catch { /* ignore */ }
+    console.error(`applications.json unreadable (${err.message}); starting empty. Backup: ${bak}`);
+    const empty = { applications: {}, counter: 0, open: true };
+    atomicWrite(DB_PATH, JSON.stringify(empty, null, 2));
+    return empty;
+  }
 }
 
 function write(data) {
   ensureDataDir();
-  fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+  atomicWrite(DB_PATH, JSON.stringify(data, null, 2));
 }
 
 /** Check if applications are currently open */
