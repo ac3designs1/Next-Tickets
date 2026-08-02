@@ -16,13 +16,14 @@ function departmentIdFromTopicName(departments, deptName) {
   return byId?.id ?? null;
 }
 
+/** Discord snowflakes are 17–20 digit decimals */
+function isSnowflake(id) {
+  return typeof id === 'string' && /^\d{17,20}$/.test(id);
+}
+
 /**
  * Status comes from the channel NAME prefix only.
- * `ticket-*` => open, `closed-*` => closed
- *
- * Topic "Status:" is intentionally ignored — it drifts when renames fail
- * under Discord rate limits and was causing open tickets to come back closed
- * after restarts.
+ * `ticket-<digits>` => open, `closed-<digits>` => closed
  */
 function statusFromChannelName(channelName) {
   if (!channelName) return null;
@@ -31,10 +32,15 @@ function statusFromChannelName(channelName) {
   return null;
 }
 
+/** True if the name is a parseable open/closed ticket channel */
+function isTicketChannelName(channelName) {
+  return /^(ticket|closed)-\d{1,10}(?:-|$)/i.test(channelName || '');
+}
+
 /**
  * Parse a staff ticket channel into a ticket record.
  * Channel names: ticket-0001-user / closed-0001-user
- * Topics: Ticket #1 | User: name (123) | Status: open | Dept: Community Assistant Team
+ * Topics: Ticket #1 | User: name (123456789012345678) | Status: open | Dept: Community Assistant Team
  *
  * @param {{ id: string, name: string, topic?: string|null, createdAt?: Date }} channel
  * @param {Array<{id: string, name: string}>} departments
@@ -48,7 +54,8 @@ function parseTicketChannel(channel, departments = []) {
   if (!Number.isFinite(id) || id < 1) return null;
 
   const topic = channel.topic || '';
-  const userMatch = topic.match(/User:\s*(.+?)\s*\((\d{5,25})\)/i);
+  // Strict: only accept User: name (snowflake)
+  const userMatch = topic.match(/User:\s*(.+?)\s*\((\d{17,20})\)/i);
   const deptMatch = topic.match(/Dept:\s*(.+)$/i);
 
   const status = statusFromChannelName(channel.name) || 'open';
@@ -65,18 +72,25 @@ function parseTicketChannel(channel, departments = []) {
   };
 }
 
-/** Pull a Discord snowflake user id out of common bot embed/text shapes */
+/**
+ * Pull a Discord snowflake user id from known bot text shapes only.
+ * Avoids false positives from random numbers in staff notes.
+ */
 function extractUserIdFromText(text) {
   if (!text) return null;
+  const s = String(text);
+
   const patterns = [
-    /User:\s*.+?\((\d{5,25})\)/i,
-    /\((\d{5,25})\)/,
-    /<@!?(\d{5,25})>/,
-    /\b(\d{17,25})\b/,
+    /User:\s*.+?\((\d{17,20})\)/i,
+    /\*\*User:\*\*[^\n]*\((\d{17,20})\)/i,
+    /Applicant:\s*.+?\((\d{17,20})\)/i,
+    /<@!?(\d{17,20})>/,
+    /`(\d{17,20})`/,
   ];
+
   for (const re of patterns) {
-    const m = String(text).match(re);
-    if (m?.[1]) return m[1];
+    const m = s.match(re);
+    if (m?.[1] && isSnowflake(m[1])) return m[1];
   }
   return null;
 }
@@ -84,6 +98,8 @@ function extractUserIdFromText(text) {
 module.exports = {
   departmentIdFromTopicName,
   statusFromChannelName,
+  isTicketChannelName,
   parseTicketChannel,
   extractUserIdFromText,
+  isSnowflake,
 };

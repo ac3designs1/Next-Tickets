@@ -27,8 +27,14 @@ const {
   parseTicketChannel: parseTicketChannelRaw,
   extractUserIdFromText,
   statusFromChannelName,
+  isTicketChannelName,
 } = require('./ticket-channel');
 const DEPARTMENTS  = require('./departments.json');
+
+// Serialize boot reconcile vs ticket opens; per-user open locks prevent duplicates
+let ticketsReady = Promise.resolve();
+let resolveTicketsReady = null;
+const openTicketLocks = new Map();
 
 // Channel where submitted applications are posted (management-only channel in main guild)
 const APPLICATIONS_CHANNEL_ID = process.env.APPLICATIONS_CHANNEL_ID || '1527645538244100136';
@@ -80,7 +86,7 @@ async function tryDM(userId, payload) {
 /** Resolve a ticket's staff channel, fetching if not cached */
 async function resolveTicketChannel(ticket) {
   if (!ticket?.channelId) return null;
-  const staffGuild = getStaffGuild();
+  const staffGuild = await getStaffGuildAsync();
   if (!staffGuild) return null;
   return (
     staffGuild.channels.cache.get(ticket.channelId)
@@ -290,19 +296,16 @@ function buildPermissionOverwrites(guild, departmentRoleId = null) {
  * @returns {Promise<boolean>} whether the channel name now matches the desired status
  */
 async function applyTicketChannelStatus(channel, status) {
-  if (!channel?.name) return false;
+  if (!channel?.name || !isTicketChannelName(channel.name)) return false;
   const wantClosed = status === 'closed';
-  const isClosedName = /^closed-/i.test(channel.name);
-  const isOpenName = /^ticket-/i.test(channel.name);
-
-  if (wantClosed && isClosedName) return true;
-  if (!wantClosed && isOpenName) return true;
+  const current = statusFromChannelName(channel.name);
+  if (current === (wantClosed ? 'closed' : 'open')) return true;
 
   const nextName = wantClosed
     ? channel.name.replace(/^ticket-/i, 'closed-')
     : channel.name.replace(/^closed-/i, 'ticket-');
 
-  if (nextName === channel.name) return false;
+  if (nextName === channel.name || !isTicketChannelName(nextName)) return false;
 
   try {
     await channel.setName(nextName);
@@ -698,7 +701,7 @@ function parseTicketChannel(channel) {
   return parseTicketChannelRaw(channel, DEPARTMENTS);
 }
 
-/** Pull userId from channel topic or recent bot embeds */
+/** Pull userId from channel topic or recent bot embeds (strict snowflake shapes only) */
 async function recoverUserIdFromChannel(channel, parsed) {
   if (parsed?.userId) return parsed.userId;
 
@@ -734,20 +737,22 @@ async function resolveTicketFromChannel(channel) {
   const parsed = parseTicketChannel(channel);
   const existing = db.getTicketByChannel(channel.id) || (parsed ? db.getTicket(parsed.id) : null);
 
-  // Not a ticket channel
   if (!parsed && !existing) return null;
-
-  // Known ticket, but channel no longer looks like one — keep DB record as-is
   if (!parsed) return existing;
 
   const liveStatus = statusFromChannelName(channel.name) || parsed.status || existing?.status || 'open';
   const userId = (await recoverUserIdFromChannel(channel, parsed)) || existing?.userId || null;
-  if (!userId) return existing; // can't fully restore
 
-  // Always sync from Discord name so restarts can't leave tickets weirdly closed/open
+  // Always sync status/channelId from Discord name — even without userId —
+  // so restarts cannot leave tickets weirdly closed while the channel is ticket-*
+  if (!userId && !existing) {
+    db.ensureCounterAtLeast(parsed.id);
+    return null;
+  }
+
   const restored = db.upsertTicket({
     id: parsed.id,
-    userId,
+    userId: userId || existing.userId,
     username: parsed.username || existing?.username || 'unknown',
     channelId: channel.id,
     status: liveStatus,
@@ -772,7 +777,7 @@ async function reconcileTicketsFromStaffGuild() {
   const staffGuild = await getStaffGuildAsync();
   if (!staffGuild) {
     console.warn('⚠️  Staff guild unavailable — skipping ticket reconcile.');
-    return { restored: 0, updated: 0, skipped: 0, open: 0 };
+    return { restored: 0, updated: 0, skipped: 0, closedOrphans: 0, open: 0 };
   }
 
   try {
@@ -784,25 +789,45 @@ async function reconcileTicketsFromStaffGuild() {
   let restored = 0;
   let updated = 0;
   let skipped = 0;
+  const seenChannelIds = new Set();
+  let maxParsedId = 0;
 
   for (const channel of staffGuild.channels.cache.values()) {
     if (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement) continue;
     const parsed = parseTicketChannel(channel);
     if (!parsed) continue;
 
-    const userId = await recoverUserIdFromChannel(channel, parsed);
-    if (!userId) {
-      skipped += 1;
-      console.warn(`⚠️  Could not recover userId for #${channel.name}`);
-      continue;
-    }
-    parsed.userId = userId;
+    seenChannelIds.add(channel.id);
+    if (parsed.id > maxParsedId) maxParsedId = parsed.id;
 
     // Force status from channel name (never trust drifted topic text)
     parsed.status = statusFromChannelName(channel.name) || parsed.status || 'open';
     parsed.closedAt = parsed.status === 'closed' ? (parsed.closedAt || new Date().toISOString()) : null;
 
     const existing = db.getTicket(parsed.id) || db.getTicketByChannel(channel.id);
+    const userId = (await recoverUserIdFromChannel(channel, parsed)) || existing?.userId || null;
+
+    if (!userId) {
+      // Still repair status/channel mapping on existing rows
+      if (existing) {
+        if (existing.status !== parsed.status || existing.channelId !== parsed.channelId) {
+          db.upsertTicket({
+            ...existing,
+            channelId: parsed.channelId,
+            status: parsed.status,
+          });
+          updated += 1;
+        }
+      } else {
+        skipped += 1;
+        db.ensureCounterAtLeast(parsed.id);
+        console.warn(`⚠️  Could not recover userId for #${channel.name} — status not fully restored`);
+      }
+      continue;
+    }
+
+    parsed.userId = userId;
+
     if (!existing) {
       db.upsertTicket(parsed);
       restored += 1;
@@ -829,20 +854,67 @@ async function reconcileTicketsFromStaffGuild() {
     }
   }
 
+  db.ensureCounterAtLeast(maxParsedId);
+
+  // Close DB rows whose Discord channel is gone, and orphan opens with no channel
+  let closedOrphans = 0;
+  for (const ticket of db.getAllTickets('open')) {
+    if (!ticket.channelId) {
+      db.closeTicket(ticket.id);
+      closedOrphans += 1;
+      console.warn(`🧾 Closed orphan open ticket #${ticket.id} (no channelId)`);
+      continue;
+    }
+    if (!seenChannelIds.has(ticket.channelId)) {
+      // Double-check with a fetch in case cache was incomplete
+      const stillThere = await staffGuild.channels.fetch(ticket.channelId).catch(() => null);
+      if (!stillThere) {
+        db.closeTicket(ticket.id);
+        closedOrphans += 1;
+        console.warn(`🧾 Closed ticket #${ticket.id} — channel missing after restart`);
+      }
+    }
+  }
+
+  db.allowBackupUpdates();
+
   const open = db.getAllTickets('open').length;
-  console.log(`🧾 Ticket reconcile: restored=${restored} updated=${updated} skipped=${skipped} open=${open}`);
+  console.log(
+    `🧾 Ticket reconcile: restored=${restored} updated=${updated} `
+    + `skipped=${skipped} closedOrphans=${closedOrphans} open=${open}`
+  );
   console.log(`💾 Ticket DB: ${db.getDbPath()}`);
-  return { restored, updated, skipped, open };
+  return { restored, updated, skipped, closedOrphans, open };
 }
 
 /**
- * Find an open ticket for a user, falling back to a live Discord scan.
+ * Find an open ticket for a user, validating the live Discord channel.
  * Used on DMs so users can keep talking even if data/ was wiped mid-flight.
  */
 async function findOpenTicketForUser(userId) {
   const uid = String(userId);
   const cached = db.getOpenTicketByUser(uid);
-  if (cached) return cached;
+
+  if (cached) {
+    // Validate against Discord — never trust a stale "open" row
+    if (cached.channelId) {
+      const channel = await resolveTicketChannel(cached);
+      if (channel && statusFromChannelName(channel.name) === 'open') {
+        // Keep DB in sync if anything drifted
+        if (cached.status !== 'open') db.reopenTicket(cached.id);
+        return db.getTicket(cached.id);
+      }
+      if (channel && statusFromChannelName(channel.name) === 'closed') {
+        db.closeTicket(cached.id);
+      } else if (!channel) {
+        // Channel gone — clear and fall through to live scan
+        db.closeTicket(cached.id);
+      }
+    } else {
+      // Open row with no channel — treat as orphan, fall through
+      db.closeTicket(cached.id);
+    }
+  }
 
   const staffGuild = await getStaffGuildAsync();
   if (!staffGuild) return null;
@@ -853,7 +925,7 @@ async function findOpenTicketForUser(userId) {
 
   for (const channel of staffGuild.channels.cache.values()) {
     if (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement) continue;
-    if (!/^ticket-\d+/i.test(channel.name || '')) continue; // open tickets only
+    if (statusFromChannelName(channel.name) !== 'open') continue;
 
     const parsed = parseTicketChannel(channel);
     if (!parsed) continue;
@@ -878,6 +950,21 @@ async function findOpenTicketForUser(userId) {
 // Ticket creation logic
 // ---------------------------------------------------------------------------
 async function openTicket(user, subject) {
+  const uid = String(user.id);
+
+  // Wait for boot reconcile so we don't collide with Discord recovery IDs
+  await ticketsReady;
+
+  // Per-user lock against double-clicks creating two tickets
+  if (openTicketLocks.has(uid)) {
+    return {
+      ok: false,
+      message: 'You already have a ticket being opened — check your DMs in a moment.',
+    };
+  }
+  openTicketLocks.set(uid, true);
+
+  try {
   // Block duplicate open tickets (check DB + live Discord in case data/ was wiped)
   const existing = await findOpenTicketForUser(user.id);
   if (existing) {
@@ -888,6 +975,12 @@ async function openTicket(user, subject) {
   }
 
   const ticket = db.createTicket(user.id, user.username);
+  if (ticket._duplicate) {
+    return {
+      ok: false,
+      message: `You already have an open ticket (#${ticket.id}). Please continue in DMs with me or wait for it to be resolved.`,
+    };
+  }
   db.setTicketDepartment(ticket.id, 'community_assistant');
 
   let staffChannel;
@@ -895,6 +988,8 @@ async function openTicket(user, subject) {
     staffChannel = await createStaffChannel(ticket);
   } catch (err) {
     console.error('Failed to create staff channel:', err);
+    // Roll back the orphan open row so the user isn't permanently blocked
+    db.deleteTicket(ticket.id);
     return { ok: false, message: 'Could not create a ticket channel. Please contact staff directly.' };
   }
 
@@ -915,7 +1010,7 @@ async function openTicket(user, subject) {
     color: Colors.Yellow,
     title: `🎫 Ticket #${ticket.id} — ${subject}`,
     description: [
-      `**User:** ${user.tag} (\`${user.id}\`)`,
+      `**User:** ${user.tag} (${user.id})`,
       `**Subject:** ${subject}`,
       `**Status:** 🟢 Open`,
       '',
@@ -954,6 +1049,9 @@ async function openTicket(user, subject) {
   const dmSent = await tryDM(user.id, { embeds: [userEmbed] });
 
   return { ok: true, ticket, dmSent };
+  } finally {
+    openTicketLocks.delete(uid);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -964,20 +1062,22 @@ client.once('clientReady', async () => {
   console.log(`   Main guild  : ${process.env.MAIN_GUILD_ID}`);
   console.log(`   Staff guild : ${process.env.STAFF_GUILD_ID}`);
 
-  // Rebuild ticket records from Discord — channels are the durable source of truth
+  // Gate ticket opens until Discord reconcile finishes (incl. one retry)
+  ticketsReady = new Promise(resolve => { resolveTicketsReady = resolve; });
+
   try {
     let result = await reconcileTicketsFromStaffGuild();
-    // Guild/channel cache can lag right after login — retry once shortly after
-    if (result.restored === 0 && result.updated === 0 && db.getAllTickets().length === 0) {
-      setTimeout(() => {
-        reconcileTicketsFromStaffGuild()
-          .then(r => console.log(`✅ Tickets re-reconciled — ${r.open} open`))
-          .catch(err => console.error('Ticket re-reconcile failed:', err.message));
-      }, 5000);
+    // Guild/channel cache can lag right after login — retry once
+    if (result.restored === 0 && result.updated === 0 && result.open === 0) {
+      await new Promise(r => setTimeout(r, 5000));
+      result = await reconcileTicketsFromStaffGuild();
     }
     console.log(`✅ Tickets ready — ${result.open} open after reconcile`);
   } catch (err) {
     console.error('Ticket reconcile failed:', err.message);
+  } finally {
+    if (resolveTicketsReady) resolveTicketsReady();
+    ticketsReady = Promise.resolve();
   }
 
   // Auto-post the ticket panel in the main server
@@ -1862,8 +1962,9 @@ client.on('interactionCreate', async interaction => {
 
     // Close ticket from staff channel button
     if (interaction.customId.startsWith('close_ticket_')) {
-      const ticketId = parseInt(interaction.customId.replace('close_ticket_', ''), 10);
-      const ticket = db.getTicket(ticketId) || await resolveTicketFromChannel(interaction.channel);
+      // Always repair from the live channel first — never trust a stale DB row alone
+      const ticket = await resolveTicketFromChannel(interaction.channel)
+        || db.getTicket(parseInt(interaction.customId.replace('close_ticket_', ''), 10));
 
       if (!ticket) return interaction.reply({ content: '❌ Ticket not found.', flags: MessageFlags.Ephemeral });
       if (ticket.status === 'closed') return interaction.reply({ content: '❌ Already closed.', flags: MessageFlags.Ephemeral });
@@ -1914,8 +2015,8 @@ client.on('interactionCreate', async interaction => {
   }
   // ── Select menu — department transfer ──────────────────────────────────
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith('transfer_dept_')) {
-    const ticketId = parseInt(interaction.customId.replace('transfer_dept_', ''), 10);
-    const ticket = db.getTicket(ticketId) || await resolveTicketFromChannel(interaction.channel);
+    const ticket = await resolveTicketFromChannel(interaction.channel)
+      || db.getTicket(parseInt(interaction.customId.replace('transfer_dept_', ''), 10));
 
     if (!ticket) return interaction.update({ content: '❌ Ticket not found.', components: [] });
 
@@ -1926,12 +2027,14 @@ client.on('interactionCreate', async interaction => {
 
     await interaction.deferUpdate();
 
-    const staffGuild = getStaffGuild();
-    const channel = staffGuild?.channels.cache.get(ticket.channelId);
+    const channel = interaction.channel
+      || await resolveTicketChannel(ticket);
 
     if (!channel) {
       return interaction.editReply({ content: '❌ Ticket channel not found.', components: [] });
     }
+
+    const staffGuild = await getStaffGuildAsync() || interaction.guild;
 
     // Rebuild permission overwrites locked to this department role
     const newOverwrites = buildPermissionOverwrites(staffGuild, dept.roleId);
@@ -1947,7 +2050,7 @@ client.on('interactionCreate', async interaction => {
     await channel.setTopic(newTopic || `${currentTopic} | Dept: ${dept.name}`);
 
     // Save department to DB
-    db.setTicketDepartment(ticketId, deptId);
+    db.setTicketDepartment(ticket.id, deptId);
 
     // Post log in the channel
     const transferEmbed = makeEmbed({
@@ -1967,7 +2070,15 @@ client.on('interactionCreate', async interaction => {
     return interaction.editReply({ content: `✅ Ticket transferred to **${dept.emoji} ${dept.name}**.`, components: [] });
   }
   } catch (err) {
-    console.error('Interaction error:', err.message);
+    console.error('Interaction error:', err?.message ?? err);
+    try {
+      const msg = '❌ Something went wrong. Please try again.';
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp({ content: msg, flags: MessageFlags.Ephemeral }).catch(() => {});
+      } else if (interaction.isRepliable?.()) {
+        await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral }).catch(() => {});
+      }
+    } catch { /* ignore */ }
   }
 });
 

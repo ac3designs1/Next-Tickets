@@ -10,15 +10,19 @@ const os = require('os');
 const TEST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ticket-bot-test-'));
 process.env.DATA_DIR = TEST_DIR;
 
-// Load after DATA_DIR is set
 const db = require('./database');
 const {
   parseTicketChannel,
   departmentIdFromTopicName,
   statusFromChannelName,
   extractUserIdFromText,
+  isTicketChannelName,
 } = require('./ticket-channel');
 const DEPARTMENTS = require('./departments.json');
+
+const ALICE = '111111111111111111';
+const BOB = '222222222222222222';
+const CAROL = '333333333333333333';
 
 function cleanup() {
   try { fs.rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -26,9 +30,6 @@ function cleanup() {
 
 try {
   // ── create + lookup ─────────────────────────────────────────────────────
-  const ALICE = '111111111111111111';
-  const BOB = '222222222222222222';
-
   const t = db.createTicket(ALICE, 'alice');
   assert.strictEqual(t.status, 'open');
   db.setTicketChannel(t.id, 'chan-1');
@@ -39,6 +40,11 @@ try {
   assert.ok(db.getTicket(t.id));
   assert.ok(db.getTicket(String(t.id)));
 
+  // Duplicate open create returns existing
+  const dup = db.createTicket(ALICE, 'alice');
+  assert.strictEqual(dup.id, t.id);
+  assert.strictEqual(dup._duplicate, true);
+
   // ── close / reopen ──────────────────────────────────────────────────────
   db.closeTicket(t.id);
   assert.strictEqual(db.getTicket(t.id).status, 'closed');
@@ -46,13 +52,34 @@ try {
   db.reopenTicket(t.id);
   assert.strictEqual(db.getTicket(t.id).status, 'open');
 
-  // ── survives process-style reload via backup ────────────────────────────
+  // ── channelId uniqueness ────────────────────────────────────────────────
+  const t2 = db.createTicket(BOB, 'bob');
+  db.setTicketChannel(t2.id, 'chan-1'); // steal alice's channel
+  assert.strictEqual(db.getTicket(t.id).channelId, null, 'previous owner must lose channelId');
+  assert.strictEqual(db.getTicketByChannel('chan-1').id, t2.id);
+
+  db.upsertTicket({
+    id: t.id,
+    userId: ALICE,
+    username: 'alice',
+    channelId: 'chan-1',
+    status: 'open',
+  });
+  assert.strictEqual(db.getTicket(t2.id).channelId, null, 'upsert must clear other owners');
+  assert.strictEqual(db.getTicketByChannel('chan-1').id, t.id);
+
+  // ── deleteTicket rolls back orphans ─────────────────────────────────────
+  const orphan = db.createTicket(CAROL, 'carol');
+  assert.ok(db.deleteTicket(orphan.id));
+  assert.strictEqual(db.getTicket(orphan.id), null);
+  assert.strictEqual(db.getOpenTicketByUser(CAROL), null);
+
+  // ── survives corrupt primary via bak ────────────────────────────────────
   const primary = path.join(TEST_DIR, 'tickets.json');
   const bak = path.join(TEST_DIR, 'tickets.json.bak');
   assert.ok(fs.existsSync(primary));
   assert.ok(fs.existsSync(bak), 'expected rolling .bak after writes');
 
-  // Simulate wipe of primary — bak must restore open tickets
   fs.writeFileSync(primary, '{not-json');
   db._resetForTests();
   const restoredAfterCorrupt = db.getOpenTicketByUser(ALICE);
@@ -61,34 +88,55 @@ try {
 
   // ── empty primary with populated bak restores tickets ───────────────────
   fs.writeFileSync(primary, JSON.stringify({ tickets: {}, counter: 0 }, null, 2));
-  // bak still has the open ticket from earlier writes
   db._resetForTests();
   assert.ok(db.getOpenTicketByUser(ALICE), 'empty primary should fall back to non-empty .bak');
 
-  // ── upsert recovery after total wipe of primary AND bak ───────────────
+  // ── thinner non-empty primary loses to richer bak ───────────────────────
+  const rich = {
+    tickets: {
+      '10': { id: 10, userId: ALICE, username: 'alice', channelId: 'c10', status: 'open', department: null, createdAt: new Date().toISOString(), closedAt: null },
+      '11': { id: 11, userId: BOB, username: 'bob', channelId: 'c11', status: 'open', department: null, createdAt: new Date().toISOString(), closedAt: null },
+    },
+    counter: 11,
+  };
+  const thin = {
+    tickets: {
+      '10': { id: 10, userId: ALICE, username: 'alice', channelId: 'c10', status: 'closed', department: null, createdAt: new Date().toISOString(), closedAt: new Date().toISOString() },
+    },
+    counter: 10,
+  };
+  fs.writeFileSync(primary, JSON.stringify(thin, null, 2));
+  fs.writeFileSync(bak, JSON.stringify(rich, null, 2));
+  db._resetForTests();
+  assert.strictEqual(db.getAllTickets().length, 2, 'richer bak must win over thinner primary');
+  assert.ok(db.getOpenTicketByUser(BOB), 'bob open ticket from bak must survive');
+  assert.strictEqual(db.getTicket(10).status, 'open');
+
+  // ── upsert recovery after total wipe ────────────────────────────────────
   fs.writeFileSync(primary, JSON.stringify({ tickets: {}, counter: 0 }, null, 2));
   fs.writeFileSync(bak, JSON.stringify({ tickets: {}, counter: 0 }, null, 2));
   db._resetForTests();
-  assert.strictEqual(db.getTicket(t.id), null);
+  assert.strictEqual(db.getTicket(10), null);
 
   const restored = db.upsertTicket({
-    id: t.id,
+    id: 7,
     userId: ALICE,
     username: 'alice',
-    channelId: 'chan-1',
+    channelId: 'chan-7',
     status: 'open',
     department: 'community_assistant',
   });
-  assert.strictEqual(restored.id, t.id);
+  assert.strictEqual(restored.id, 7);
   assert.ok(db.getOpenTicketByUser(ALICE));
-  assert.ok(db.getTicketByChannel('chan-1'));
 
   const next = db.createTicket(BOB, 'bob');
-  assert.ok(next.id > t.id, `expected next id > ${t.id}, got ${next.id}`);
+  assert.ok(next.id > 7, `expected next id > 7, got ${next.id}`);
 
   // ── channel parser: NAME wins over topic status ─────────────────────────
   assert.strictEqual(statusFromChannelName('ticket-0007-kyle'), 'open');
   assert.strictEqual(statusFromChannelName('closed-0008-kyle'), 'closed');
+  assert.ok(isTicketChannelName('ticket-0007-kyle'));
+  assert.ok(!isTicketChannelName('ticket-kyle'));
   assert.strictEqual(
     departmentIdFromTopicName(DEPARTMENTS, 'Community Assistant Team'),
     'community_assistant'
@@ -97,39 +145,43 @@ try {
   const parsedOpen = parseTicketChannel({
     id: 'c1',
     name: 'ticket-0007-kyle',
-    // Topic lies and says closed — name must win
-    topic: 'Ticket #7 | User: Kyle Brown (123456789012345678) | Status: closed | Dept: Community Assistant Team',
+    topic: `Ticket #7 | User: Kyle Brown (${ALICE}) | Status: closed | Dept: Community Assistant Team`,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
   }, DEPARTMENTS);
   assert.strictEqual(parsedOpen.id, 7);
-  assert.strictEqual(parsedOpen.userId, '123456789012345678');
+  assert.strictEqual(parsedOpen.userId, ALICE);
   assert.strictEqual(parsedOpen.status, 'open', 'ticket-* must stay open even if topic says closed');
   assert.strictEqual(parsedOpen.department, 'community_assistant');
 
   const parsedClosed = parseTicketChannel({
     id: 'c2',
     name: 'closed-0008-kyle',
-    topic: 'Ticket #8 | User: Kyle (999999999999999999) | Status: open | Dept: Gang Team',
+    topic: `Ticket #8 | User: Kyle (${BOB}) | Status: open | Dept: Gang Team`,
   }, DEPARTMENTS);
-  assert.strictEqual(parsedClosed.status, 'closed', 'closed-* must stay closed even if topic says open');
+  assert.strictEqual(parsedClosed.status, 'closed');
   assert.strictEqual(parsedClosed.department, 'gang');
 
-  // Channel name without trailing username still parses
   const bare = parseTicketChannel({
     id: 'c3',
     name: 'ticket-0012',
-    topic: 'Ticket #12 | User: Sam (555555555555555555) | Status: open | Dept: Admin Team',
+    topic: `Ticket #12 | User: Sam (${CAROL}) | Status: open | Dept: Admin Team`,
   }, DEPARTMENTS);
   assert.strictEqual(bare.id, 12);
   assert.strictEqual(bare.status, 'open');
 
   assert.strictEqual(parseTicketChannel({ id: 'x', name: 'general' }, DEPARTMENTS), null);
-  assert.strictEqual(extractUserIdFromText('User: Kyle (123456789012345678)'), '123456789012345678');
-  assert.strictEqual(extractUserIdFromText('<@123456789012345678>'), '123456789012345678');
+
+  // Strict userId extraction — no false positives from short numbers
+  assert.strictEqual(extractUserIdFromText(`User: Kyle (${ALICE})`), ALICE);
+  assert.strictEqual(extractUserIdFromText(`**User:** Kyle (${ALICE})`), ALICE);
+  assert.strictEqual(extractUserIdFromText(`<@${ALICE}>`), ALICE);
+  assert.strictEqual(extractUserIdFromText(`\`${ALICE}\``), ALICE);
+  assert.strictEqual(extractUserIdFromText('see note (12345)'), null);
+  assert.strictEqual(extractUserIdFromText('random 123456789012345678 in text'), null);
 
   // ── simulate restart rebuild from Discord-shaped records ────────────────
   fs.writeFileSync(primary, JSON.stringify({ tickets: {}, counter: 0 }, null, 2));
-  try { fs.unlinkSync(bak); } catch { /* ignore */ }
+  fs.writeFileSync(bak, JSON.stringify({ tickets: {}, counter: 0 }, null, 2));
   db._resetForTests();
 
   const channels = [
@@ -155,6 +207,11 @@ try {
   assert.strictEqual(openAlice.id, 3);
   assert.strictEqual(db.getTicket(4).status, 'closed');
   assert.strictEqual(db.getOpenTicketByUser(BOB), null);
+
+  // ensureCounterAtLeast prevents ID collision after partial restore
+  db.ensureCounterAtLeast(50);
+  const after = db.createTicket(CAROL, 'carol');
+  assert.ok(after.id > 50);
 
   // No leftover tmp files
   const tmps = fs.readdirSync(TEST_DIR).filter(f => f.includes('.tmp'));
