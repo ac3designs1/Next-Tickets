@@ -1,19 +1,21 @@
 const fs   = require('fs');
 const path = require('path');
 
-const DB_PATH = path.join(__dirname, 'data', 'applications.json');
+const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(__dirname, 'data');
+const DB_PATH = path.join(DATA_DIR, 'applications.json');
 
 function atomicWrite(filePath, contents) {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const tmp = `${filePath}.${process.pid}.tmp`;
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmp, contents);
   fs.renameSync(tmp, filePath);
 }
 
 function ensureDataDir() {
-  const dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(DB_PATH)) {
     atomicWrite(DB_PATH, JSON.stringify({ applications: {}, counter: 0, open: true }, null, 2));
   }
