@@ -212,9 +212,10 @@ function buildQrAddButtonRow() {
 }
 
 /**
- * DM a ticket/application user from staff and log in-channel.
+ * DM a ticket/application user from staff.
  * Falls back to the ticket's main-server relay channel when DMs are closed.
- * Returns { dmSent, viaFallback }.
+ * Returns { dmSent, viaFallback, rankLabel, embedColor, staffDisplay, description }.
+ * Callers post the in-channel delivery log themselves.
  */
 async function sendStaffReplyToUser({
   targetUserId,
@@ -264,6 +265,37 @@ async function sendStaffReplyToUser({
   }
 
   return { dmSent: false, viaFallback: false, rankLabel, embedColor, staffDisplay, description };
+}
+
+/** Staff-channel log for a message that was (or tried to be) sent to the user. */
+function buildSentToUserLogEmbed({
+  embedColor,
+  staffDisplay,
+  author,
+  description,
+  title = null,
+  deliveryLabel,
+  contextLabel,
+}) {
+  const embed = makeEmbed({
+    color: embedColor,
+    title,
+    description,
+    footer: [deliveryLabel, contextLabel].filter(Boolean).join(' · '),
+  });
+  embed.setAuthor({
+    name: staffDisplay,
+    iconURL: typeof author.displayAvatarURL === 'function'
+      ? author.displayAvatarURL()
+      : author.displayAvatarURL,
+  });
+  return embed;
+}
+
+function deliveryFooterLabel(dmSent, viaFallback) {
+  if (dmSent) return 'Delivered ✅';
+  if (viaFallback) return 'Relay ✅';
+  return 'Failed ❌';
 }
 
 /** Create/fetch a private relay channel in the main guild when user DMs are closed */
@@ -1368,7 +1400,7 @@ async function openTicket(user, subject) {
       '',
       '> Messages the user sends via DM will appear here.',
       '> To reply to the user, start your message with `%`, e.g. `%Hello! How can I help you?`',
-      '> Any message WITHOUT `%` is an internal staff note — the user will NOT see it.',
+      '> Messages without `%` stay as normal staff chat — the user will NOT see them.',
       '> Use `/claim` to take ownership of this ticket.',
     ].join('\n'),
     footer: 'Ticket Bot',
@@ -1561,7 +1593,7 @@ client.once('clientReady', async () => {
         '**Replying to users:**',
         '> Type `%` before your message to send it to the user via DM',
         '> e.g. `%Hello! How can I help you today?`',
-        '> Any message **without** `%` is an internal staff note — the user **will not** see it.',
+        '> Messages **without** `%` stay as normal staff chat — the user **will not** see them.',
         '> If DMs fail, replies go to a private **Ticket Relay** channel on the main server.',
         '',
         `**Auto-close:** inactive open tickets close after **${STALE_TICKET_DAYS} days**.`,
@@ -2075,13 +2107,17 @@ client.on('interactionCreate', async interaction => {
         });
         db.touchTicketActivity(ticket.id);
 
-        const logEmbed = makeEmbed({
-          color: embedColor,
-          title: `⚡ Quick Reply — ${qr.label}`,
-          description,
-          footer: `Sent by ${staffDisplay} · ${dmSent ? 'Delivered ✅' : viaFallback ? 'Relay ✅' : 'Failed ❌'}`,
+        await interaction.channel.send({
+          embeds: [buildSentToUserLogEmbed({
+            embedColor,
+            staffDisplay,
+            author: interaction.user,
+            title: `⚡ Quick Reply — ${qr.label}`,
+            description,
+            deliveryLabel: deliveryFooterLabel(dmSent, viaFallback),
+            contextLabel: `Sent by ${staffDisplay}`,
+          })],
         });
-        await interaction.channel.send({ embeds: [logEmbed] });
 
         return interaction.editReply({
           content: dmSent
@@ -2119,11 +2155,14 @@ client.on('interactionCreate', async interaction => {
       db.touchTicketActivity(ticket.id);
 
       await interaction.channel.send({
-        embeds: [makeEmbed({
-          color: embedColor,
+        embeds: [buildSentToUserLogEmbed({
+          embedColor,
+          staffDisplay,
+          author: interaction.user,
           title: `⚡ Quick Reply — ${legacyQr.label}`,
           description,
-          footer: `Sent by ${staffDisplay} · ${dmSent ? 'Delivered ✅' : viaFallback ? 'Relay ✅' : 'Failed ❌'}`,
+          deliveryLabel: deliveryFooterLabel(dmSent, viaFallback),
+          contextLabel: `Sent by ${staffDisplay}`,
         })],
       });
 
@@ -3099,21 +3138,20 @@ client.on('messageCreate', async message => {
         });
         db.touchTicketActivity(ticket.id);
 
+        // One log embed only — drop the raw `qr send` command message
         await message.channel.send({
-          embeds: [makeEmbed({
-            color: embedColor,
+          embeds: [buildSentToUserLogEmbed({
+            embedColor,
+            staffDisplay,
+            author: message.author,
             title: `⚡ Quick Reply — ${qr.label}`,
             description,
-            footer: `Sent by ${staffDisplay} · ${dmSent ? 'Delivered ✅' : viaFallback ? 'Relay ✅' : 'Failed ❌'}`,
+            deliveryLabel: deliveryFooterLabel(dmSent, viaFallback),
+            contextLabel: `Sent by ${staffDisplay}`,
           })],
         });
-        return message.reply(
-          dmSent
-            ? `✅ Sent **${qr.label}**.`
-            : viaFallback
-              ? `✅ Sent **${qr.label}** via relay.`
-              : '❌ Could not DM the user.'
-        );
+        await message.delete().catch(() => null);
+        return;
       }
 
       return message.reply('Unknown qr command. Try `qr help`.');
@@ -3138,6 +3176,15 @@ client.on('messageCreate', async message => {
       return message.reply('⚠️ This ticket is closed. Use `/reopen` before replying.');
     }
 
+    if (application) {
+      const appStatus = String(application.status || 'pending').toLowerCase();
+      if (appStatus === 'accepted' || appStatus === 'declined') {
+        return message.reply(
+          `⚠️ This application is already **${appStatus}**. Reset it before messaging the applicant.`
+        );
+      }
+    }
+
     const replyContent = message.content.slice(1).trim();
     const files = filesFromMessage(message);
     if (!replyContent && !files.length) {
@@ -3148,7 +3195,7 @@ client.on('messageCreate', async message => {
     const targetUserId = ticket ? ticket.userId : application.userId;
     const contextLabel = application ? `APP-${application.id}  ·  Next RP` : `Ticket #${ticket?.id}  ·  Next RP`;
 
-    const { dmSent, viaFallback } = await sendStaffReplyToUser({
+    const { dmSent, viaFallback, rankLabel, embedColor, staffDisplay, description } = await sendStaffReplyToUser({
       targetUserId,
       content: replyContent || '*(attachment)*',
       member,
@@ -3159,11 +3206,26 @@ client.on('messageCreate', async message => {
     });
     if (ticket) db.touchTicketActivity(ticket.id);
 
-    await message.react(dmSent || viaFallback ? '✅' : '❌').catch(() => {});
-    if (!dmSent && !viaFallback) {
-      await message.reply('⚠️ Could not DM the user — they may have DMs disabled.').catch(() => {});
-    } else if (!dmSent && viaFallback) {
-      await message.reply('📩 Delivered via ticket relay channel (user DMs closed).').catch(() => {});
+    if (dmSent || viaFallback) {
+      // Replace the raw `%…` message with a clean "sent to user" log (embeds only on outbound)
+      await message.channel.send({
+        embeds: [buildSentToUserLogEmbed({
+          embedColor,
+          staffDisplay,
+          author: message.author,
+          description,
+          deliveryLabel: `${rankLabel} · ${deliveryFooterLabel(dmSent, viaFallback)}`,
+          contextLabel,
+        })],
+        files: files.length ? files : undefined,
+      });
+      await message.delete().catch(() => null);
+    } else {
+      await message.react('❌').catch(() => {});
+      const failHint = application
+        ? '⚠️ Could not DM the applicant — they may have DMs disabled.'
+        : '⚠️ Could not DM the user — they may have DMs disabled.';
+      await message.reply(failHint).catch(() => {});
     }
 
     return;
