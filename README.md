@@ -158,8 +158,9 @@ Attachments work with both methods. If DMs are closed, `%` replies go to a priva
 Run `/transfer` inside any ticket channel. A dropdown appears with all departments from `departments.json`.
 When you select one:
 
-- The channel's permissions are updated so **that department's role** can see it
-- **Admin Team** and **Management Team** always keep access
+- The channel's permissions are updated for that department
+- **Management** always keeps access
+- **Admin** keeps access on all tickets **except** ones transferred to Management
 - Any active claim is cleared so the destination team can `/claim`
 - A log message is posted (and the department role is pinged)
 - The topic is updated to reflect the department

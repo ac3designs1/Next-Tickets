@@ -513,11 +513,13 @@ async function getDeptCategory(guild, dept) {
 }
 
 /** Build permission overwrites for a ticket channel.
+ *  Hierarchy: Management > Admin > other departments.
  *  - @everyone: denied
- *  - Bot itself: allowed
- *  - Management + Admin roles: always allowed (see everything)
- *  - departmentRoleId (if set): allowed for that department
- *  - DEFAULT_STAFF_ROLE_ID (if set and no department): allowed
+ *  - Bot: allowed
+ *  - Management: always allowed
+ *  - Admin: allowed on all tickets except Management-only ones
+ *  - Assigned department role: allowed (if not already covered)
+ *  - DEFAULT_STAFF_ROLE_ID: allowed only when unassigned
  */
 function buildPermissionOverwrites(guild, departmentRoleId = null) {
   const allowedPerms = [
@@ -527,13 +529,11 @@ function buildPermissionOverwrites(guild, departmentRoleId = null) {
   ];
 
   const overwrites = [
-    // Hide from everyone by default
     {
       id: guild.roles.everyone,
       deny: [PermissionFlagsBits.ViewChannel],
       type: OverwriteType.Role,
     },
-    // Always allow the bot itself
     {
       id: client.user.id,
       allow: [
@@ -552,8 +552,11 @@ function buildPermissionOverwrites(guild, departmentRoleId = null) {
     },
   ];
 
-  // Admin Team also always sees every ticket (unless they're the assigned dept already)
-  if (ADMIN_ROLE_ID && ADMIN_ROLE_ID !== MANAGEMENT_ROLE_ID) {
+  const isManagementTicket = departmentRoleId && departmentRoleId === MANAGEMENT_ROLE_ID;
+  const isAdminTicket = departmentRoleId && departmentRoleId === ADMIN_ROLE_ID;
+
+  // Admin sees everything below Management — not Management-only tickets
+  if (ADMIN_ROLE_ID && ADMIN_ROLE_ID !== MANAGEMENT_ROLE_ID && !isManagementTicket) {
     overwrites.push({
       id: ADMIN_ROLE_ID,
       allow: allowedPerms,
@@ -561,17 +564,15 @@ function buildPermissionOverwrites(guild, departmentRoleId = null) {
     });
   }
 
-  const leadershipIds = new Set([MANAGEMENT_ROLE_ID, ADMIN_ROLE_ID].filter(Boolean));
-
-  if (departmentRoleId && !leadershipIds.has(departmentRoleId)) {
-    // Locked to a specific department: that role (+ Admin/Management) can see it
+  if (departmentRoleId && !isManagementTicket && !isAdminTicket) {
+    // Lower department: that role + Admin + Management
     overwrites.push({
       id: departmentRoleId,
       allow: allowedPerms,
       type: OverwriteType.Role,
     });
   } else if (!departmentRoleId && process.env.DEFAULT_STAFF_ROLE_ID) {
-    // No department yet: visible to general staff
+    // Unassigned: general staff + Admin + Management
     overwrites.push({
       id: process.env.DEFAULT_STAFF_ROLE_ID,
       allow: allowedPerms,
@@ -1587,12 +1588,13 @@ client.once('clientReady', async () => {
       title: '🏢 Departments  —  `/transfer`',
       description: [
         'Use `/transfer` inside a ticket to move it to a department.',
-        'That department (plus **Admin** and **Management**) will be able to see the channel.',
+        '**Hierarchy:** Management > Admin > other departments.',
+        'Management always sees every ticket. Admin sees all tickets **except** ones transferred to Management.',
         'Transferring clears any active claim so the new team can claim it.',
         '',
         ...deptLines,
       ].join('\n'),
-      footer: 'Admin Team and Management always have access to all tickets.',
+      footer: 'Management is above Admin — Admin cannot see Management tickets.',
     });
 
     await guideChannel.send({ embeds: [commandsEmbed] });
@@ -2358,7 +2360,8 @@ client.on('interactionCreate', async interaction => {
         content: [
           `**Transfer Ticket #${ticket.id}**`,
           `Currently: \`${currentDept}\``,
-          'Select a department. That department plus **Admin** and **Management** will see the channel.',
+          'Select a department.',
+          '**Management** always keeps access. **Admin** keeps access unless you transfer to Management.',
           'Any active claim will be cleared so the new team can claim it.',
         ].join('\n'),
         components: [row],
@@ -2808,6 +2811,12 @@ client.on('interactionCreate', async interaction => {
     if (hadClaim) db.unclaimTicket(ticket.id);
     const fresh = db.getTicket(ticket.id);
 
+    const visibilityNote = dept.id === 'management'
+      ? 'Only **Management** can see this channel now (Admin does not have access).'
+      : dept.id === 'admin'
+        ? '**Admin** and **Management** can see this channel.'
+        : `<@&${dept.roleId}> plus **Admin** and **Management** can see this channel.`;
+
     // Post log in the channel (ping destination department)
     const transferEmbed = makeEmbed({
       color: dept.color ?? Colors.Orange,
@@ -2815,7 +2824,7 @@ client.on('interactionCreate', async interaction => {
       description: [
         `This ticket has been transferred to **${dept.name}**.`,
         '',
-        `<@&${dept.roleId}> plus **Admin** and **Management** can see this channel.`,
+        visibilityNote,
         hadClaim ? 'Previous claim was cleared — please `/claim` if you are taking it.' : null,
         `Transferred by ${interaction.user.tag}`,
       ].filter(Boolean).join('\n'),
