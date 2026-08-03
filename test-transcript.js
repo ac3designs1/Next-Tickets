@@ -28,7 +28,14 @@ const messages = [
     createdAt: new Date('2026-01-01T01:05:00.000Z'),
     author: { tag: 'Bot#0000' },
     content: '',
-    embeds: [{ title: 'Staff reply', description: 'Hi!', footer: { text: 'Staff' } }],
+    embeds: [{ title: 'Staff reply', description: 'Hi!', footer: { text: 'Staff · Delivered ✅' } }],
+    attachments: [],
+  },
+  {
+    createdAt: new Date('2026-01-01T01:06:00.000Z'),
+    author: { tag: 'mod#1' },
+    content: '%Old style raw reply',
+    embeds: [],
     attachments: [],
   },
 ];
@@ -37,7 +44,9 @@ const text = formatTranscript({ ticket, messages, closedBy: 'mod#1' });
 assert.ok(text.includes('Ticket #7 transcript'));
 assert.ok(text.includes('Help please'));
 assert.ok(text.includes('Hello staff'));
-assert.ok(text.includes('[embed] Staff reply | Hi! | Staff'));
+assert.ok(text.includes('[sent] Staff reply | Hi! | Staff · Delivered ✅'));
+assert.ok(text.includes('Old style raw reply'));
+assert.ok(!text.includes('%Old style'));
 assert.ok(text.includes('Closed by: mod#1'));
 
 console.log('✅ transcript tests passed');

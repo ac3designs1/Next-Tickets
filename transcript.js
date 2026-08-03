@@ -21,9 +21,22 @@ function formatTranscript({ ticket, messages, closedBy }) {
   for (const msg of messages) {
     const ts = msg.createdAt ? msg.createdAt.toISOString() : '';
     const author = msg.author?.tag || msg.author?.username || 'unknown';
-    const content = (msg.content || '').trim();
+    // Strip staff outbound `%` prefix if an old raw reply is still in history
+    let content = (msg.content || '').trim();
+    if (content.startsWith('%')) content = content.slice(1).trim();
     const embedBits = (msg.embeds || [])
-      .map(e => [e.title, e.description, e.footer?.text].filter(Boolean).join(' | '))
+      .map(e => {
+        const parts = [e.title, e.description, e.footer?.text].filter(Boolean);
+        if (!parts.length) return null;
+        const footer = e.footer?.text || '';
+        const title = e.title || '';
+        const label = /Delivered|Relay|Failed|Sent by/i.test(footer) || /Quick Reply/i.test(title)
+          ? 'sent'
+          : /Staff note|not sent to user/i.test(footer)
+            ? 'note'
+            : 'embed';
+        return `[${label}] ${parts.join(' | ')}`;
+      })
       .filter(Boolean);
     const attachments = [...(msg.attachments?.values?.() || msg.attachments || [])]
       .map(a => a.url || a.name)
@@ -31,7 +44,7 @@ function formatTranscript({ ticket, messages, closedBy }) {
 
     const body = [
       content,
-      ...embedBits.map(t => `[embed] ${t}`),
+      ...embedBits,
       ...attachments.map(u => `[attachment] ${u}`),
     ].filter(Boolean).join('\n');
 
