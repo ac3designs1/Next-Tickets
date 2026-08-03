@@ -1,23 +1,90 @@
-const fs   = require('fs');
+const fs = require('fs');
 const path = require('path');
 
-const DB_PATH = path.join(__dirname, 'quick-replies.json');
+/**
+ * Quick replies — stored under DATA_DIR so they survive panel/Docker restarts.
+ * Seeds from repo-root quick-replies.json on first run.
+ */
 
-function ensureFile() {
-  if (!fs.existsSync(DB_PATH)) {
-    fs.writeFileSync(DB_PATH, JSON.stringify([], null, 2));
+const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(__dirname, 'data');
+const DB_PATH = path.join(DATA_DIR, 'quick-replies.json');
+const BAK_PATH = path.join(DATA_DIR, 'quick-replies.json.bak');
+const SEED_PATH = path.join(__dirname, 'quick-replies.json');
+
+let cache = null;
+
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function atomicWrite(filePath, contents) {
+  ensureDataDir();
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, contents);
+  fs.renameSync(tmp, filePath);
+}
+
+function loadSeed() {
+  try {
+    if (!fs.existsSync(SEED_PATH)) return [];
+    const data = JSON.parse(fs.readFileSync(SEED_PATH, 'utf8'));
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
   }
 }
 
-function read() {
-  ensureFile();
-  const data = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
-  return Array.isArray(data) ? data : [];
+function tryParse(file, label) {
+  if (!fs.existsSync(file)) return null;
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    if (!raw || !raw.trim()) throw new Error('empty file');
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data : null;
+  } catch (err) {
+    const corrupt = `${file}.corrupt.${Date.now()}`;
+    try { fs.copyFileSync(file, corrupt); } catch { /* ignore */ }
+    console.error(`${label} unreadable (${err.message}). Kept copy at ${corrupt}`);
+    return null;
+  }
 }
 
-function write(list) {
-  ensureFile();
-  fs.writeFileSync(DB_PATH, JSON.stringify(list, null, 2));
+function readFromDisk() {
+  ensureDataDir();
+  const primary = tryParse(DB_PATH, 'quick-replies.json');
+  const backup = tryParse(BAK_PATH, 'quick-replies.json.bak');
+
+  if (backup && (!primary || backup.length > primary.length)) {
+    console.warn('⚠️  Restored quick-replies from .bak');
+    atomicWrite(DB_PATH, JSON.stringify(backup, null, 2));
+    try { fs.copyFileSync(DB_PATH, BAK_PATH); } catch { /* ignore */ }
+    return backup.map(r => ({ ...r }));
+  }
+
+  if (primary) return primary.map(r => ({ ...r }));
+
+  // Migrate legacy repo-root file into DATA_DIR if present and richer than seed
+  const legacy = tryParse(SEED_PATH, 'seed quick-replies.json') || loadSeed();
+  const seed = legacy.length ? legacy : [];
+  atomicWrite(DB_PATH, JSON.stringify(seed, null, 2));
+  try { fs.copyFileSync(DB_PATH, BAK_PATH); } catch { /* ignore */ }
+  return seed.map(r => ({ ...r }));
+}
+
+function getList() {
+  if (!cache) cache = readFromDisk();
+  return cache;
+}
+
+function persist(list) {
+  ensureDataDir();
+  atomicWrite(DB_PATH, JSON.stringify(list, null, 2));
+  try { fs.copyFileSync(DB_PATH, BAK_PATH); } catch (err) {
+    console.error('Failed to write quick-replies backup:', err.message);
+  }
+  cache = list.map(r => ({ ...r }));
 }
 
 /** Normalize a reply id: lowercase, letters/numbers/underscore only */
@@ -31,12 +98,13 @@ function normalizeId(raw) {
 }
 
 function getAll() {
-  return read();
+  return getList().map(r => ({ ...r }));
 }
 
 function getById(id) {
   const key = normalizeId(id);
-  return read().find(r => r.id === key) ?? null;
+  const hit = getList().find(r => r.id === key);
+  return hit ? { ...hit } : null;
 }
 
 /**
@@ -58,7 +126,7 @@ function add(id, label, message) {
     return { ok: false, error: 'Message must be 2000 characters or less.' };
   }
 
-  const list = read();
+  const list = getList().map(r => ({ ...r }));
   if (list.some(r => r.id === cleanId)) {
     return { ok: false, error: `A quick reply with id \`${cleanId}\` already exists. Remove it first or pick another id.` };
   }
@@ -69,8 +137,8 @@ function add(id, label, message) {
     message: String(message).trim(),
   };
   list.push(reply);
-  write(list);
-  return { ok: true, reply };
+  persist(list);
+  return { ok: true, reply: { ...reply } };
 }
 
 /**
@@ -79,7 +147,7 @@ function add(id, label, message) {
  */
 function update(id, { label, message } = {}) {
   const cleanId = normalizeId(id);
-  const list = read();
+  const list = getList().map(r => ({ ...r }));
   const idx = list.findIndex(r => r.id === cleanId);
   if (idx === -1) return { ok: false, error: `No quick reply \`${cleanId}\` found.` };
 
@@ -90,8 +158,8 @@ function update(id, { label, message } = {}) {
     }
     list[idx].message = String(message).trim();
   }
-  write(list);
-  return { ok: true, reply: list[idx] };
+  persist(list);
+  return { ok: true, reply: { ...list[idx] } };
 }
 
 /**
@@ -100,12 +168,16 @@ function update(id, { label, message } = {}) {
  */
 function remove(id) {
   const cleanId = normalizeId(id);
-  const list = read();
+  const list = getList().map(r => ({ ...r }));
   const idx = list.findIndex(r => r.id === cleanId);
   if (idx === -1) return { ok: false, error: `No quick reply \`${cleanId}\` found.` };
   const [reply] = list.splice(idx, 1);
-  write(list);
-  return { ok: true, reply };
+  persist(list);
+  return { ok: true, reply: { ...reply } };
+}
+
+function _resetForTests() {
+  cache = null;
 }
 
 module.exports = {
@@ -115,4 +187,5 @@ module.exports = {
   add,
   update,
   remove,
+  _resetForTests,
 };

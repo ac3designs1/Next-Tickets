@@ -217,6 +217,42 @@ try {
   const tmps = fs.readdirSync(TEST_DIR).filter(f => f.includes('.tmp'));
   assert.deepStrictEqual(tmps, []);
 
+  // ── claim / subject / activity / reopen guard ────────────────────────────
+  const claimed = db.claimTicket(openAlice.id, '999', 'staff#1');
+  assert.strictEqual(claimed.claimedBy, '999');
+  db.setTicketSubject(openAlice.id, 'Need help');
+  assert.strictEqual(db.getTicket(openAlice.id).subject, 'Need help');
+  db.touchTicketActivity(openAlice.id);
+  assert.ok(db.getTicket(openAlice.id).lastActivityAt);
+
+  // Close carol's open ticket from ensureCounterAtLeast section first
+  db.closeTicket(after.id);
+  const t3 = db.createTicket(CAROL, 'carol', 'other');
+  db.closeTicket(t3.id);
+  // Carol still has no other open — reopen OK
+  const re1 = db.reopenTicket(t3.id);
+  assert.strictEqual(re1.status, 'open');
+  assert.ok(!re1._blocked);
+  db.closeTicket(t3.id);
+
+  // Block reopen when another open ticket exists for same user
+  const openCarol = db.createTicket(CAROL, 'carol', 'second');
+  assert.strictEqual(openCarol.status, 'open');
+  const blocked = db.reopenTicket(t3.id);
+  assert.strictEqual(blocked._blocked, true);
+  assert.strictEqual(blocked._otherOpenId, openCarol.id);
+  db.closeTicket(openCarol.id);
+
+  const stats = db.getStats();
+  assert.ok(stats.total >= 1);
+  assert.ok('avgCloseMs' in stats);
+
+  // Stale helper: brand-new tickets are not stale
+  assert.strictEqual(db.getStaleOpenTickets(7).length, db.getAllTickets('open').filter(x => {
+    const last = Date.parse(x.lastActivityAt || x.createdAt);
+    return last <= Date.now() - 7 * 86400000;
+  }).length);
+
   console.log('✅ All ticket persistence smoke tests passed');
   cleanup();
   process.exit(0);

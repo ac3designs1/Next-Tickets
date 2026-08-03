@@ -128,9 +128,11 @@ The bot will automatically:
 | `/setup` | Main Server | Staff — posts the "Open a Ticket" button panel |
 | `/ticket <subject>` | Main Server | Anyone — opens a ticket directly |
 | `/transfer` | Staff Server (ticket channel) | Staff — transfers ticket to a department |
-| `/close` | Staff Server (ticket channel) | Staff — closes the ticket |
+| `/claim` / `/unclaim` | Staff Server (ticket channel) | Staff — take or release ownership |
+| `/close` | Staff Server (ticket channel) | Staff — closes the ticket (saves transcript) |
 | `/reopen` | Staff Server (ticket channel) | Staff — reopens a closed ticket |
 | `/tickets` | Staff Server | Staff — lists all open tickets |
+| `/stats` | Either | Staff — open/closed/claim/ban metrics |
 | `/ticketban ban` | Either | Admin / Management — ban a user from opening tickets |
 | `/ticketban unban` | Either | Admin / Management — lift a ticket ban |
 | `/ticketban list` | Either | Admin / Management — list ticket bans |
@@ -168,11 +170,15 @@ ticket-bot/
 ├── deploy-commands.js  # Run once to register slash commands
 ├── database.js         # JSON-based ticket storage
 ├── ticket-bans-db.js   # Users banned from opening tickets
+├── transcript.js       # Close-time ticket transcripts
 ├── departments.json    # Department config (names, role IDs, colours)
 ├── .env                # Your secrets (never commit this!)
 ├── .env.example        # Template for .env
 ├── package.json
 └── data/
-    ├── tickets.json      # Auto-created — stores all ticket records
-    └── ticket-bans.json  # Auto-created — ticket ban list
+    ├── tickets.json        # Auto-created — stores all ticket records
+    ├── ticket-bans.json    # Auto-created — ticket ban list
+    ├── applications.json   # Staff applications
+    ├── quick-replies.json  # Canned replies (survives restarts)
+    └── transcripts/        # Saved close transcripts
 ```

@@ -37,6 +37,30 @@ function atomicWrite(filePath, contents) {
   fs.renameSync(tmp, filePath);
 }
 
+function normalizeTicket(ticket, key) {
+  if (!ticket || typeof ticket !== 'object') return null;
+  const idNum = Number(ticket.id ?? key);
+  if (!Number.isFinite(idNum)) return null;
+  const status = ticket.status === 'closed' ? 'closed' : 'open';
+  const createdAt = ticket.createdAt || new Date().toISOString();
+  return {
+    id: idNum,
+    userId: ticket.userId != null ? String(ticket.userId) : '',
+    username: ticket.username || 'unknown',
+    channelId: ticket.channelId || null,
+    fallbackChannelId: ticket.fallbackChannelId || null,
+    status,
+    department: ticket.department || null,
+    subject: ticket.subject || null,
+    claimedBy: ticket.claimedBy != null ? String(ticket.claimedBy) : null,
+    claimedByTag: ticket.claimedByTag || null,
+    claimedAt: ticket.claimedAt || null,
+    createdAt,
+    closedAt: status === 'closed' ? (ticket.closedAt || null) : null,
+    lastActivityAt: ticket.lastActivityAt || createdAt,
+  };
+}
+
 function parseDb(raw, label) {
   const data = JSON.parse(raw);
   if (!data || typeof data !== 'object') throw new Error(`${label}: invalid db shape`);
@@ -45,20 +69,10 @@ function parseDb(raw, label) {
 
   const normalized = {};
   for (const [key, ticket] of Object.entries(data.tickets)) {
-    if (!ticket || typeof ticket !== 'object') continue;
-    const idNum = Number(ticket.id ?? key);
-    if (!Number.isFinite(idNum)) continue;
-    normalized[String(idNum)] = {
-      id: idNum,
-      userId: ticket.userId != null ? String(ticket.userId) : '',
-      username: ticket.username || 'unknown',
-      channelId: ticket.channelId || null,
-      status: ticket.status === 'closed' ? 'closed' : 'open',
-      department: ticket.department || null,
-      createdAt: ticket.createdAt || new Date().toISOString(),
-      closedAt: ticket.status === 'closed' ? (ticket.closedAt || null) : null,
-    };
-    if (idNum > data.counter) data.counter = idNum;
+    const row = normalizeTicket(ticket, key);
+    if (!row) continue;
+    normalized[String(row.id)] = row;
+    if (row.id > data.counter) data.counter = row.id;
   }
   data.tickets = normalized;
   return data;
@@ -179,8 +193,16 @@ function clearChannelIdOwners(db, channelId, exceptKey = null) {
   }
 }
 
+function clearFallbackChannelOwners(db, fallbackChannelId, exceptKey = null) {
+  if (!fallbackChannelId) return;
+  for (const [key, ticket] of Object.entries(db.tickets)) {
+    if (exceptKey && key === exceptKey) continue;
+    if (ticket.fallbackChannelId === fallbackChannelId) ticket.fallbackChannelId = null;
+  }
+}
+
 // Create a new ticket, returns the ticket object
-function createTicket(userId, username) {
+function createTicket(userId, username, subject = null) {
   return mutate(db => {
     // Hard guard against duplicate open tickets for the same user
     const uid = String(userId);
@@ -194,16 +216,23 @@ function createTicket(userId, username) {
     db.counter += 1;
     const ticketId = db.counter;
     const key = String(ticketId);
+    const now = new Date().toISOString();
 
     db.tickets[key] = {
       id: ticketId,
       userId: uid,
       username,
       channelId: null,
+      fallbackChannelId: null,
       status: 'open',
       department: null,
-      createdAt: new Date().toISOString(),
+      subject: subject ? String(subject).slice(0, 200) : null,
+      claimedBy: null,
+      claimedByTag: null,
+      claimedAt: null,
+      createdAt: now,
       closedAt: null,
+      lastActivityAt: now,
     };
 
     return { ...db.tickets[key] };
@@ -221,11 +250,67 @@ function setTicketChannel(ticketId, channelId) {
   });
 }
 
+function setFallbackChannel(ticketId, fallbackChannelId) {
+  return mutate(db => {
+    const key = String(ticketId);
+    if (!db.tickets[key]) return null;
+    clearFallbackChannelOwners(db, fallbackChannelId, key);
+    db.tickets[key].fallbackChannelId = fallbackChannelId || null;
+    return { ...db.tickets[key] };
+  });
+}
+
+function setTicketSubject(ticketId, subject) {
+  return mutate(db => {
+    const key = String(ticketId);
+    if (!db.tickets[key]) return null;
+    db.tickets[key].subject = subject ? String(subject).slice(0, 200) : null;
+    return { ...db.tickets[key] };
+  });
+}
+
+function claimTicket(ticketId, staffId, staffTag) {
+  return mutate(db => {
+    const key = String(ticketId);
+    if (!db.tickets[key]) return null;
+    if (db.tickets[key].status !== 'open') {
+      return { ...db.tickets[key], _error: 'closed' };
+    }
+    db.tickets[key].claimedBy = String(staffId);
+    db.tickets[key].claimedByTag = staffTag || 'staff';
+    db.tickets[key].claimedAt = new Date().toISOString();
+    db.tickets[key].lastActivityAt = new Date().toISOString();
+    return { ...db.tickets[key] };
+  });
+}
+
+function unclaimTicket(ticketId) {
+  return mutate(db => {
+    const key = String(ticketId);
+    if (!db.tickets[key]) return null;
+    db.tickets[key].claimedBy = null;
+    db.tickets[key].claimedByTag = null;
+    db.tickets[key].claimedAt = null;
+    return { ...db.tickets[key] };
+  });
+}
+
+function touchTicketActivity(ticketId) {
+  return mutate(db => {
+    const key = String(ticketId);
+    if (!db.tickets[key]) return null;
+    db.tickets[key].lastActivityAt = new Date().toISOString();
+    return { ...db.tickets[key] };
+  });
+}
+
 // Find ticket by the Discord channel it maps to
 function getTicketByChannel(channelId) {
   if (!channelId) return null;
   const db = getDb();
-  const hit = Object.values(db.tickets).find(t => t.channelId === channelId) || null;
+  const hit = Object.values(db.tickets).find(
+    t => t.channelId === channelId || t.fallbackChannelId === channelId
+  ) || null;
   return hit ? { ...hit } : null;
 }
 
@@ -252,18 +337,32 @@ function closeTicket(ticketId) {
     if (!db.tickets[key]) return null;
     db.tickets[key].status = 'closed';
     db.tickets[key].closedAt = new Date().toISOString();
+    db.tickets[key].lastActivityAt = db.tickets[key].closedAt;
     return { ...db.tickets[key] };
   });
 }
 
-// Reopen a ticket
+/**
+ * Reopen a ticket. Blocks if the user already has a different open ticket.
+ * @returns {object|null} ticket, or ticket with `_blocked` + `_otherOpenId`
+ */
 function reopenTicket(ticketId) {
   return mutate(db => {
     const key = String(ticketId);
     if (!db.tickets[key]) return null;
-    db.tickets[key].status = 'open';
-    db.tickets[key].closedAt = null;
-    return { ...db.tickets[key] };
+    const ticket = db.tickets[key];
+    const otherOpen = Object.values(db.tickets).find(
+      t => String(t.userId) === String(ticket.userId)
+        && t.status === 'open'
+        && String(t.id) !== key
+    );
+    if (otherOpen) {
+      return { ...ticket, _blocked: true, _otherOpenId: otherOpen.id };
+    }
+    ticket.status = 'open';
+    ticket.closedAt = null;
+    ticket.lastActivityAt = new Date().toISOString();
+    return { ...ticket };
   });
 }
 
@@ -284,12 +383,55 @@ function getAllTickets(status = null) {
   return status ? all.filter(t => t.status === status) : all;
 }
 
+/** Open tickets with no activity for at least `days` days */
+function getStaleOpenTickets(days) {
+  const ms = Math.max(1, Number(days) || 7) * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - ms;
+  return getAllTickets('open').filter(t => {
+    const last = Date.parse(t.lastActivityAt || t.createdAt || 0);
+    return Number.isFinite(last) && last <= cutoff;
+  });
+}
+
+/** Aggregate stats for /stats */
+function getStats() {
+  const all = getAllTickets();
+  const open = all.filter(t => t.status === 'open');
+  const closed = all.filter(t => t.status === 'closed');
+  const claimed = open.filter(t => t.claimedBy);
+  const unclaimed = open.filter(t => !t.claimedBy);
+
+  const closeDurations = closed
+    .map(t => {
+      const start = Date.parse(t.createdAt || 0);
+      const end = Date.parse(t.closedAt || 0);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+      return end - start;
+    })
+    .filter(n => n != null);
+
+  const avgCloseMs = closeDurations.length
+    ? Math.round(closeDurations.reduce((a, b) => a + b, 0) / closeDurations.length)
+    : null;
+
+  return {
+    total: all.length,
+    open: open.length,
+    closed: closed.length,
+    claimed: claimed.length,
+    unclaimed: unclaimed.length,
+    avgCloseMs,
+    closedWithDuration: closeDurations.length,
+  };
+}
+
 // Set the department a ticket has been transferred to
 function setTicketDepartment(ticketId, departmentId) {
   return mutate(db => {
     const key = String(ticketId);
     if (!db.tickets[key]) return null;
     db.tickets[key].department = departmentId;
+    db.tickets[key].lastActivityAt = new Date().toISOString();
     return { ...db.tickets[key] };
   });
 }
@@ -309,20 +451,33 @@ function upsertTicket(ticket) {
 
     const status = ticket.status === 'closed' ? 'closed' : 'open';
     const channelId = ticket.channelId !== undefined ? ticket.channelId : (prev.channelId ?? null);
+    const fallbackChannelId = ticket.fallbackChannelId !== undefined
+      ? ticket.fallbackChannelId
+      : (prev.fallbackChannelId ?? null);
+    const createdAt = prev.createdAt || ticket.createdAt || new Date().toISOString();
 
     clearChannelIdOwners(db, channelId, key);
+    clearFallbackChannelOwners(db, fallbackChannelId, key);
 
     db.tickets[key] = {
       id: idNum,
       userId: String(ticket.userId ?? prev.userId ?? ''),
       username: ticket.username ?? prev.username ?? 'unknown',
       channelId,
+      fallbackChannelId,
       status,
       department: ticket.department ?? prev.department ?? null,
-      createdAt: prev.createdAt || ticket.createdAt || new Date().toISOString(),
+      subject: ticket.subject !== undefined ? ticket.subject : (prev.subject ?? null),
+      claimedBy: ticket.claimedBy !== undefined
+        ? (ticket.claimedBy != null ? String(ticket.claimedBy) : null)
+        : (prev.claimedBy ?? null),
+      claimedByTag: ticket.claimedByTag !== undefined ? ticket.claimedByTag : (prev.claimedByTag ?? null),
+      claimedAt: ticket.claimedAt !== undefined ? ticket.claimedAt : (prev.claimedAt ?? null),
+      createdAt,
       closedAt: status === 'closed'
         ? (ticket.closedAt || prev.closedAt || new Date().toISOString())
         : null,
+      lastActivityAt: ticket.lastActivityAt || prev.lastActivityAt || createdAt,
     };
 
     if (idNum > db.counter) db.counter = idNum;
@@ -356,7 +511,12 @@ function getDbPath() {
 module.exports = {
   createTicket,
   setTicketChannel,
+  setFallbackChannel,
+  setTicketSubject,
   setTicketDepartment,
+  claimTicket,
+  unclaimTicket,
+  touchTicketActivity,
   getTicketByChannel,
   getOpenTicketByUser,
   getTicket,
@@ -364,6 +524,8 @@ module.exports = {
   reopenTicket,
   deleteTicket,
   getAllTickets,
+  getStaleOpenTickets,
+  getStats,
   upsertTicket,
   ensureCounterAtLeast,
   allowBackupUpdates,

@@ -17,12 +17,14 @@ const {
   OverwriteType,
   MessageFlags,
   Colors,
+  AttachmentBuilder,
 } = require('discord.js');
 
 const db      = require('./database');
 const appDb   = require('./applications-db');
 const banDb   = require('./ticket-bans-db');
 const qrDb    = require('./quick-replies-db');
+const { buildAndSaveTranscript } = require('./transcript');
 const { deployCommands } = require('./deploy-commands');
 const {
   parseTicketChannel: parseTicketChannelRaw,
@@ -46,6 +48,7 @@ const MANAGEMENT_DEPT = DEPARTMENTS.find(d => d.id === 'management') || null;
 const ADMIN_DEPT = DEPARTMENTS.find(d => d.id === 'admin') || null;
 const MANAGEMENT_ROLE_ID = MANAGEMENT_DEPT?.roleId || '1515309451727470794';
 const ADMIN_ROLE_ID = ADMIN_DEPT?.roleId || '1515309068200185866';
+const STALE_TICKET_DAYS = Math.max(1, Number(process.env.STALE_TICKET_DAYS) || 7);
 
 /** Admin Team, Management Team, or Discord Administrator may manage ticket bans */
 function canManageTicketBans(member) {
@@ -54,6 +57,29 @@ function canManageTicketBans(member) {
   const roles = member.roles?.cache;
   if (!roles) return false;
   return roles.has(MANAGEMENT_ROLE_ID) || roles.has(ADMIN_ROLE_ID);
+}
+
+/** Any department role, default staff role, or Administrator */
+function isStaffMember(member) {
+  if (!member) return false;
+  if (member.permissions?.has(PermissionFlagsBits.Administrator)) return true;
+  const roles = member.roles?.cache;
+  if (!roles) return false;
+  if (process.env.DEFAULT_STAFF_ROLE_ID && roles.has(process.env.DEFAULT_STAFF_ROLE_ID)) return true;
+  return DEPARTMENTS.some(d => roles.has(d.roleId));
+}
+
+/** Admin/Management may edit the shared quick-reply book */
+function canManageQuickReplies(member) {
+  return canManageTicketBans(member);
+}
+
+function formatDuration(ms) {
+  if (ms == null || !Number.isFinite(ms)) return '—';
+  const hours = ms / (1000 * 60 * 60);
+  if (hours < 1) return `${Math.round(ms / (1000 * 60))}m`;
+  if (hours < 48) return `${hours.toFixed(1)}h`;
+  return `${(hours / 24).toFixed(1)}d`;
 }
 
 // In-memory draft store for multi-step application forms: userId → partial answers
@@ -187,9 +213,18 @@ function buildQrAddButtonRow() {
 
 /**
  * DM a ticket/application user from staff and log in-channel.
- * Returns { dmSent }.
+ * Falls back to the ticket's main-server relay channel when DMs are closed.
+ * Returns { dmSent, viaFallback }.
  */
-async function sendStaffReplyToUser({ targetUserId, content, member, author, contextLabel, files = [] }) {
+async function sendStaffReplyToUser({
+  targetUserId,
+  content,
+  member,
+  author,
+  contextLabel,
+  files = [],
+  ticket = null,
+}) {
   const { rankLabel, embedColor } = getStaffRank(member);
   const staffDisplay = member?.displayName ?? author.username;
   const description = String(content || '').slice(0, 4096) || '*(no text)*';
@@ -206,7 +241,224 @@ async function sendStaffReplyToUser({ targetUserId, content, member, author, con
   if (files.length) payload.files = files;
 
   const dmSent = await tryDM(targetUserId, payload);
-  return { dmSent, rankLabel, embedColor, staffDisplay, description };
+  if (dmSent) {
+    return { dmSent: true, viaFallback: false, rankLabel, embedColor, staffDisplay, description };
+  }
+
+  // DM failed — try main-server fallback channel for tickets
+  if (ticket) {
+    const fallback = await ensureFallbackChannel(ticket);
+    if (fallback) {
+      try {
+        await fallback.send({
+          content: `<@${targetUserId}>`,
+          embeds: [userEmbed],
+          files: files.length ? files : undefined,
+          allowedMentions: { users: [String(targetUserId)] },
+        });
+        return { dmSent: false, viaFallback: true, rankLabel, embedColor, staffDisplay, description };
+      } catch (err) {
+        console.error(`Fallback delivery failed for ticket #${ticket.id}:`, err.message);
+      }
+    }
+  }
+
+  return { dmSent: false, viaFallback: false, rankLabel, embedColor, staffDisplay, description };
+}
+
+/** Create/fetch a private relay channel in the main guild when user DMs are closed */
+async function ensureFallbackChannel(ticket) {
+  if (!ticket) return null;
+  if (ticket.fallbackChannelId) {
+    const existing = await client.channels.fetch(ticket.fallbackChannelId).catch(() => null);
+    if (existing) return existing;
+  }
+
+  const mainGuildId = process.env.MAIN_GUILD_ID;
+  if (!mainGuildId) return null;
+  const mainGuild = client.guilds.cache.get(mainGuildId)
+    || await client.guilds.fetch(mainGuildId).catch(() => null);
+  if (!mainGuild) return null;
+
+  try {
+    const category = await getOrCreateCategory(mainGuild, '📩 Ticket Relay');
+    const safeName = `ticket-${String(ticket.id).padStart(4, '0')}`
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '')
+      .slice(0, 90);
+
+    const channel = await mainGuild.channels.create({
+      name: safeName,
+      type: ChannelType.GuildText,
+      parent: category.id,
+      topic: `Relay for ticket #${ticket.id} | User: ${ticket.username} (${ticket.userId})`,
+      permissionOverwrites: [
+        {
+          id: mainGuild.roles.everyone,
+          deny: [PermissionFlagsBits.ViewChannel],
+          type: OverwriteType.Role,
+        },
+        {
+          id: client.user.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.ManageChannels,
+          ],
+          type: OverwriteType.Member,
+        },
+        {
+          id: ticket.userId,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.AttachFiles,
+          ],
+          type: OverwriteType.Member,
+        },
+        // Only add management overwrite when that role exists in the main guild
+        ...(mainGuild.roles.cache.has(MANAGEMENT_ROLE_ID) ? [{
+          id: MANAGEMENT_ROLE_ID,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+          ],
+          type: OverwriteType.Role,
+        }] : []),
+        ...(mainGuild.roles.cache.has(APPLICATIONS_ROLE_ID) && APPLICATIONS_ROLE_ID !== MANAGEMENT_ROLE_ID ? [{
+          id: APPLICATIONS_ROLE_ID,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+          ],
+          type: OverwriteType.Role,
+        }] : []),
+      ],
+    });
+
+    db.setFallbackChannel(ticket.id, channel.id);
+    ticket.fallbackChannelId = channel.id;
+
+    await channel.send({
+      content: `<@${ticket.userId}>`,
+      embeds: [makeEmbed({
+        color: Colors.Orange,
+        title: '📩 Ticket Relay Channel',
+        description: [
+          'Staff could not reach you via DM, so this private channel is your ticket inbox.',
+          '',
+          'Messages you send here go to staff. Staff replies will also appear here.',
+          `**Ticket:** #${ticket.id}`,
+          ticket.subject ? `**Subject:** ${ticket.subject}` : null,
+        ].filter(Boolean).join('\n'),
+      })],
+      allowedMentions: { users: [String(ticket.userId)] },
+    });
+
+    return channel;
+  } catch (err) {
+    console.error(`Failed to create fallback channel for ticket #${ticket.id}:`, err.message);
+    return null;
+  }
+}
+
+/** Shared close flow: rename → transcript → DB close → notify → move */
+async function finalizeTicketClose({ channel, ticket, closedByTag, via = 'command' }) {
+  const renamed = await applyTicketChannelStatus(channel, 'closed');
+  if (!renamed) {
+    return {
+      ok: false,
+      message: '❌ Could not rename the channel to `closed-…` (Discord rate limit?). Ticket left **open** — try again in a minute.',
+    };
+  }
+
+  let transcriptFile = null;
+  try {
+    const built = await buildAndSaveTranscript({
+      ticket,
+      channel,
+      closedBy: closedByTag,
+      dataDir: db.getDataDir(),
+    });
+    transcriptFile = new AttachmentBuilder(Buffer.from(built.text, 'utf8'), { name: built.fileName });
+  } catch (err) {
+    console.error(`Transcript failed for ticket #${ticket.id}:`, err.message);
+  }
+
+  db.closeTicket(ticket.id);
+
+  const userEmbed = makeEmbed({
+    color: Colors.Red,
+    title: '🔒 Ticket Closed',
+    description: 'Your ticket has been closed by staff.\n\nIf you need further help, open a new ticket.',
+  });
+  const dmSent = await tryDM(ticket.userId, { embeds: [userEmbed] });
+  if (!dmSent && ticket.fallbackChannelId) {
+    const fallback = await client.channels.fetch(ticket.fallbackChannelId).catch(() => null);
+    if (fallback) {
+      await fallback.send({ content: `<@${ticket.userId}>`, embeds: [userEmbed] }).catch(() => {});
+    }
+  }
+
+  const closeEmbed = makeEmbed({
+    color: Colors.Red,
+    title: '🔒 Ticket Closed',
+    description: `Closed by ${closedByTag}${via === 'button' ? ' (via button)' : via === 'stale' ? ' (auto — inactive)' : ''}`,
+    footer: `Ticket #${ticket.id}`,
+  });
+
+  await channel.send({
+    embeds: [closeEmbed],
+    files: transcriptFile ? [transcriptFile] : undefined,
+  });
+
+  try {
+    const closedCat = await getOrCreateCategory(channel.guild, '🔒 Closed Tickets');
+    await channel.setParent(closedCat.id, { lockPermissions: false });
+  } catch (err) {
+    console.error('Close move failed:', err.message);
+  }
+
+  // Lock fallback relay if present
+  if (ticket.fallbackChannelId) {
+    try {
+      const fallback = await client.channels.fetch(ticket.fallbackChannelId).catch(() => null);
+      if (fallback) {
+        await fallback.send({ embeds: [closeEmbed] }).catch(() => {});
+        await fallback.setName(`closed-${String(ticket.id).padStart(4, '0')}`.slice(0, 100)).catch(() => {});
+        await fallback.permissionOverwrites.edit(ticket.userId, {
+          SendMessages: false,
+        }).catch(() => {});
+      }
+    } catch (err) {
+      console.error('Fallback close cleanup failed:', err.message);
+    }
+  }
+
+  return { ok: true, message: transcriptFile ? '✅ Ticket closed (transcript attached).' : '✅ Ticket closed.' };
+}
+
+/** Resolve staff guild member for cross-guild permission checks */
+async function resolveStaffMember(userId) {
+  const staffGuild = await getStaffGuildAsync();
+  if (!staffGuild) return null;
+  return staffGuild.members.fetch(userId).catch(() => null);
+}
+
+async function memberCanManageTicketBans(interaction) {
+  if (canManageTicketBans(interaction.member)) return true;
+  const staffMember = await resolveStaffMember(interaction.user.id);
+  return canManageTicketBans(staffMember);
+}
+
+async function memberIsStaff(interaction) {
+  if (isStaffMember(interaction.member)) return true;
+  const staffMember = await resolveStaffMember(interaction.user.id);
+  return isStaffMember(staffMember);
 }
 
 /** Resolve the staff guild from env (cache first) */
@@ -997,7 +1249,7 @@ async function openTicket(user, subject) {
     };
   }
 
-  const ticket = db.createTicket(user.id, user.username);
+  const ticket = db.createTicket(user.id, user.username, subject);
   if (ticket._duplicate) {
     return {
       ok: false,
@@ -1029,6 +1281,7 @@ async function openTicket(user, subject) {
   await tryDM(user.id, { embeds: [autoEmbed] });
 
   // Post the ticket header in the staff channel
+  const caDept = DEPARTMENTS.find(d => d.id === 'community_assistant');
   const staffEmbed = makeEmbed({
     color: Colors.Yellow,
     title: `🎫 Ticket #${ticket.id} — ${subject}`,
@@ -1036,15 +1289,22 @@ async function openTicket(user, subject) {
       `**User:** ${user.tag} (${user.id})`,
       `**Subject:** ${subject}`,
       `**Status:** 🟢 Open`,
+      `**Claimed:** Unclaimed`,
       '',
       '> Messages the user sends via DM will appear here.',
       '> To reply to the user, start your message with `%`, e.g. `%Hello! How can I help you?`',
       '> Any message WITHOUT `%` is an internal staff note — the user will NOT see it.',
+      '> Use `/claim` to take ownership of this ticket.',
     ].join('\n'),
     footer: 'Ticket Bot',
   });
 
   const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`claim_ticket_${ticket.id}`)
+      .setLabel('Claim')
+      .setStyle(ButtonStyle.Success)
+      .setEmoji('🙋'),
     new ButtonBuilder()
       .setCustomId(`close_ticket_${ticket.id}`)
       .setLabel('Close Ticket')
@@ -1052,7 +1312,13 @@ async function openTicket(user, subject) {
       .setEmoji('🔒')
   );
 
-  await staffChannel.send({ embeds: [staffEmbed], components: [row] });
+  const pingRole = caDept?.roleId || process.env.DEFAULT_STAFF_ROLE_ID;
+  await staffChannel.send({
+    content: pingRole ? `<@&${pingRole}> New ticket` : undefined,
+    embeds: [staffEmbed],
+    components: [row],
+    allowedMentions: pingRole ? { roles: [pingRole] } : undefined,
+  });
 
   // DM the user a confirmation
   const userEmbed = makeEmbed({
@@ -1070,8 +1336,21 @@ async function openTicket(user, subject) {
   });
 
   const dmSent = await tryDM(user.id, { embeds: [userEmbed] });
+  if (!dmSent) {
+    const fresh = db.getTicket(ticket.id);
+    const fallback = await ensureFallbackChannel(fresh || ticket);
+    if (fallback) {
+      return {
+        ok: true,
+        ticket,
+        dmSent: false,
+        viaFallback: true,
+        fallbackChannelId: fallback.id,
+      };
+    }
+  }
 
-  return { ok: true, ticket, dmSent };
+  return { ok: true, ticket, dmSent, viaFallback: false };
   } finally {
     openTicketLocks.delete(uid);
   }
@@ -1197,13 +1476,16 @@ client.once('clientReady', async () => {
         'All commands are used inside ticket channels in this server unless stated otherwise.',
         '',
         '`/qr send` — Send a saved quick reply to the user',
-        '`/qr add` — Add a new quick reply (form)',
-        '`/qr remove` — Remove a quick reply',
+        '`/qr add` — Add a new quick reply (Admin/Management)',
+        '`/qr remove` — Remove a quick reply (Admin/Management)',
         '`/qr list` — List all quick replies',
+        '`/claim` — Claim this ticket',
+        '`/unclaim` — Release your claim',
         '`/transfer` — Move the ticket to a specific department',
-        '`/close` — Close the ticket and notify the user',
+        '`/close` — Close the ticket (saves a transcript)',
         '`/reopen` — Reopen a closed ticket',
         '`/tickets` — List all currently open tickets',
+        '`/stats` — Ticket volume / claim stats',
         '`/ticketban ban` — Ban a user from opening tickets (Admin/Management)',
         '`/ticketban unban` — Allow a banned user to open tickets again (Admin/Management)',
         '`/ticketban list` — List ticket bans (Admin/Management)',
@@ -1216,6 +1498,7 @@ client.once('clientReady', async () => {
         '> Type `%` before your message to send it to the user via DM',
         '> e.g. `%Hello! How can I help you today?`',
         '> Any message **without** `%` is an internal staff note — the user **will not** see it.',
+        '> If DMs fail, replies go to a private **Ticket Relay** channel on the main server.',
       ].join('\n'),
     });
 
@@ -1253,6 +1536,38 @@ client.once('clientReady', async () => {
   } catch (err) {
     console.error('Failed to post staff guide:', err.message);
   }
+
+  // Auto-close stale open tickets
+  const runStalePass = async () => {
+    try {
+      const stale = db.getStaleOpenTickets(STALE_TICKET_DAYS);
+      if (!stale.length) return;
+      console.log(`⏳ Auto-closing ${stale.length} stale ticket(s) (>${STALE_TICKET_DAYS}d inactive)`);
+      for (const ticket of stale) {
+        const channel = await resolveTicketChannel(ticket);
+        if (!channel) {
+          db.closeTicket(ticket.id);
+          continue;
+        }
+        await finalizeTicketClose({
+          channel,
+          ticket,
+          closedByTag: 'Ticket Bot (auto-close)',
+          via: 'stale',
+        });
+        const userEmbed = makeEmbed({
+          color: Colors.Orange,
+          title: '🔒 Ticket Auto-Closed',
+          description: `Your ticket was closed after **${STALE_TICKET_DAYS} days** without activity.\nOpen a new ticket if you still need help.`,
+        });
+        await tryDM(ticket.userId, { embeds: [userEmbed] });
+      }
+    } catch (err) {
+      console.error('Stale ticket pass failed:', err.message);
+    }
+  };
+  await runStalePass();
+  setInterval(runStalePass, 60 * 60 * 1000);
 });
 
 // ---------------------------------------------------------------------------
@@ -1279,6 +1594,12 @@ client.on('interactionCreate', async interaction => {
 
   // ── Modal submit — add quick reply ──────────────────────────────────────
   if (interaction.isModalSubmit() && interaction.customId === 'qr_add_modal') {
+    if (!(await memberCanManageTicketBans(interaction))) {
+      return interaction.reply({
+        content: '❌ Only Admin Team and Management Team can add quick replies.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
     const id = interaction.fields.getTextInputValue('qr_id');
     const label = interaction.fields.getTextInputValue('qr_label');
     const message = interaction.fields.getTextInputValue('qr_message');
@@ -1292,6 +1613,25 @@ client.on('interactionCreate', async interaction => {
       content: `✅ Quick reply **${result.reply.label}** saved as \`${result.reply.id}\`.\nUse \`/qr send reply:${result.reply.id}\` in a ticket to send it.`,
       flags: MessageFlags.Ephemeral,
     });
+  }
+
+  // ── Modal submit — panel ticket subject ─────────────────────────────────
+  if (interaction.isModalSubmit() && interaction.customId === 'ticket_subject_modal') {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const subject = interaction.fields.getTextInputValue('ticket_subject').trim();
+    const result = await openTicket(interaction.user, subject || `Support request from ${interaction.user.username}`);
+
+    if (!result.ok) {
+      return interaction.editReply({ content: `❌ ${result.message}` });
+    }
+
+    let msg = '✅ Ticket opened! Check your DMs.';
+    if (result.viaFallback) {
+      msg = `✅ Ticket opened! I couldn't DM you — use <#${result.fallbackChannelId}> to talk to staff.`;
+    } else if (!result.dmSent) {
+      msg = '✅ Ticket opened! I couldn\'t DM you — please enable DMs from server members.';
+    }
+    return interaction.editReply({ content: msg });
   }
 
   // ── Slash commands ──────────────────────────────────────────────────────
@@ -1338,11 +1678,23 @@ client.on('interactionCreate', async interaction => {
         return interaction.editReply({ content: `❌ ${result.message}` });
       }
 
-      const msg = result.dmSent
-        ? `✅ Ticket opened! Check your DMs for confirmation.`
-        : `✅ Ticket opened! I couldn't DM you — please enable DMs from server members.`;
+      let msg = '✅ Ticket opened! Check your DMs for confirmation.';
+      if (result.viaFallback) {
+        msg = `✅ Ticket opened! I couldn't DM you — use <#${result.fallbackChannelId}> to talk to staff.`;
+      } else if (!result.dmSent) {
+        msg = '✅ Ticket opened! I couldn\'t DM you — please enable DMs from server members.';
+      }
 
       return interaction.editReply({ content: msg });
+    }
+
+    // Staff-only commands below
+    const staffCommands = new Set(['close', 'reopen', 'tickets', 'claim', 'unclaim', 'stats', 'transfer', 'qr']);
+    if (staffCommands.has(commandName)) {
+      const staffOk = await memberIsStaff(interaction);
+      if (!staffOk) {
+        return interaction.reply({ content: '❌ Staff only.', flags: MessageFlags.Ephemeral });
+      }
     }
 
     // /close — close the current ticket (staff guild only)
@@ -1353,39 +1705,13 @@ client.on('interactionCreate', async interaction => {
       if (!ticket) return interaction.editReply({ content: '❌ This is not a ticket channel.' });
       if (ticket.status === 'closed') return interaction.editReply({ content: '❌ This ticket is already closed.' });
 
-      // Rename FIRST — channel name is what survives restarts
-      const renamed = await applyTicketChannelStatus(interaction.channel, 'closed');
-      if (!renamed) {
-        return interaction.editReply({
-          content: '❌ Could not rename the channel to `closed-…` (Discord rate limit?). Ticket left **open** — try `/close` again in a minute.',
-        });
-      }
-
-      db.closeTicket(ticket.id);
-
-      const userEmbed = makeEmbed({
-        color: Colors.Red,
-        title: '🔒 Ticket Closed',
-        description: `Your ticket has been closed by staff.\n\nIf you need further help, open a new ticket.`,
+      const result = await finalizeTicketClose({
+        channel: interaction.channel,
+        ticket,
+        closedByTag: interaction.user.tag,
+        via: 'command',
       });
-      await tryDM(ticket.userId, { embeds: [userEmbed] });
-
-      const closeEmbed = makeEmbed({
-        color: Colors.Red,
-        title: '🔒 Ticket Closed',
-        description: `Closed by ${interaction.user.tag}`,
-        footer: `Ticket #${ticket.id}`,
-      });
-
-      await interaction.channel.send({ embeds: [closeEmbed] });
-      try {
-        const closedCat = await getOrCreateCategory(interaction.guild, '🔒 Closed Tickets');
-        await interaction.channel.setParent(closedCat.id, { lockPermissions: false });
-      } catch (err) {
-        console.error('Close move failed:', err.message);
-      }
-
-      return interaction.editReply({ content: '✅ Ticket closed.' });
+      return interaction.editReply({ content: result.message });
     }
 
     // /reopen — reopen a closed ticket
@@ -1396,6 +1722,13 @@ client.on('interactionCreate', async interaction => {
       if (!ticket) return interaction.editReply({ content: '❌ This is not a ticket channel.' });
       if (ticket.status === 'open') return interaction.editReply({ content: '❌ This ticket is already open.' });
 
+      const otherOpen = db.getOpenTicketByUser(ticket.userId);
+      if (otherOpen && Number(otherOpen.id) !== Number(ticket.id)) {
+        return interaction.editReply({
+          content: `❌ This user already has open ticket **#${otherOpen.id}**. Close that one before reopening this ticket.`,
+        });
+      }
+
       const renamed = await applyTicketChannelStatus(interaction.channel, 'open');
       if (!renamed) {
         return interaction.editReply({
@@ -1403,7 +1736,13 @@ client.on('interactionCreate', async interaction => {
         });
       }
 
-      db.reopenTicket(ticket.id);
+      const reopened = db.reopenTicket(ticket.id);
+      if (reopened?._blocked) {
+        await applyTicketChannelStatus(interaction.channel, 'closed').catch(() => {});
+        return interaction.editReply({
+          content: `❌ This user already has open ticket **#${reopened._otherOpenId}**. Close that one before reopening this ticket.`,
+        });
+      }
 
       const userEmbed = makeEmbed({
         color: Colors.Green,
@@ -1434,9 +1773,90 @@ client.on('interactionCreate', async interaction => {
       return interaction.editReply({ content: '✅ Ticket reopened.' });
     }
 
+    // /claim — claim the current ticket
+    if (commandName === 'claim') {
+      const ticket = await resolveTicketFromChannel(interaction.channel);
+      if (!ticket) {
+        return interaction.reply({ content: '❌ This is not a ticket channel.', flags: MessageFlags.Ephemeral });
+      }
+      if (ticket.status === 'closed') {
+        return interaction.reply({ content: '❌ This ticket is closed.', flags: MessageFlags.Ephemeral });
+      }
+      if (ticket.claimedBy && ticket.claimedBy !== String(interaction.user.id)) {
+        return interaction.reply({
+          content: `⚠️ Already claimed by **${ticket.claimedByTag || ticket.claimedBy}**. Use \`/unclaim\` first if needed.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      const updated = db.claimTicket(ticket.id, interaction.user.id, interaction.user.tag);
+      await interaction.channel.send({
+        embeds: [makeEmbed({
+          color: Colors.Green,
+          title: '🙋 Ticket Claimed',
+          description: `Claimed by ${interaction.user}`,
+          footer: `Ticket #${ticket.id}`,
+        })],
+      });
+      return interaction.reply({
+        content: `✅ You claimed ticket **#${updated.id}**.`,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
+    // /unclaim — release claim
+    if (commandName === 'unclaim') {
+      const ticket = await resolveTicketFromChannel(interaction.channel);
+      if (!ticket) {
+        return interaction.reply({ content: '❌ This is not a ticket channel.', flags: MessageFlags.Ephemeral });
+      }
+      if (!ticket.claimedBy) {
+        return interaction.reply({ content: '⚠️ This ticket is not claimed.', flags: MessageFlags.Ephemeral });
+      }
+
+      const isOwner = ticket.claimedBy === String(interaction.user.id);
+      const elevated = canManageTicketBans(interaction.member) || await memberCanManageTicketBans(interaction);
+      if (!isOwner && !elevated) {
+        return interaction.reply({
+          content: '❌ Only the claimer (or Admin/Management) can unclaim this ticket.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      db.unclaimTicket(ticket.id);
+      await interaction.channel.send({
+        embeds: [makeEmbed({
+          color: Colors.Orange,
+          title: '🙋 Ticket Unclaimed',
+          description: `Released by ${interaction.user}`,
+          footer: `Ticket #${ticket.id}`,
+        })],
+      });
+      return interaction.reply({ content: '✅ Ticket unclaimed.', flags: MessageFlags.Ephemeral });
+    }
+
+    // /stats — ticket metrics
+    if (commandName === 'stats') {
+      const s = db.getStats();
+      const bans = banDb.listBans().length;
+      const embed = makeEmbed({
+        color: Colors.Blurple,
+        title: '📊 Ticket Stats',
+        description: [
+          `**Open:** ${s.open} (${s.claimed} claimed · ${s.unclaimed} unclaimed)`,
+          `**Closed:** ${s.closed}`,
+          `**Total:** ${s.total}`,
+          `**Avg time to close:** ${formatDuration(s.avgCloseMs)} (${s.closedWithDuration} samples)`,
+          `**Ticket bans:** ${bans}`,
+          `**Stale auto-close:** ${STALE_TICKET_DAYS} day${STALE_TICKET_DAYS === 1 ? '' : 's'}`,
+        ].join('\n'),
+      });
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
+
     // /tickets — list open tickets
     if (commandName === 'tickets') {
-      const open = db.getAllTickets('open');
+      const open = db.getAllTickets('open').sort((a, b) => Number(a.id) - Number(b.id));
       if (open.length === 0) {
         return interaction.reply({ content: '✅ No open tickets right now.', flags: MessageFlags.Ephemeral });
       }
@@ -1445,21 +1865,59 @@ client.on('interactionCreate', async interaction => {
         const deptLabel = t.department
           ? (DEPARTMENTS.find(d => d.id === t.department)?.name ?? t.department)
           : 'Unassigned';
-        return `**#${t.id}** — ${t.username} (\`${t.userId}\`) — \`${deptLabel}\` — opened <t:${Math.floor(new Date(t.createdAt).getTime() / 1000)}:R>`;
+        const channelBit = t.channelId ? `<#${t.channelId}>` : '`no channel`';
+        const subject = t.subject ? t.subject.slice(0, 60) : '(no subject)';
+        const claim = t.claimedBy
+          ? `claimed by <@${t.claimedBy}>`
+          : '**unclaimed**';
+        const opened = `<t:${Math.floor(new Date(t.createdAt).getTime() / 1000)}:R>`;
+        return `**#${t.id}** ${channelBit} — ${t.username}\n> ${subject} · \`${deptLabel}\` · ${claim} · ${opened}`;
       });
 
-      const embed = makeEmbed({
-        color: Colors.Blurple,
-        title: `📋 Open Tickets (${open.length})`,
-        description: lines.join('\n'),
-      });
+      // Discord embed description limit 4096
+      const chunks = [];
+      let buf = '';
+      for (const line of lines) {
+        if ((buf + '\n' + line).length > 3900) {
+          chunks.push(buf);
+          buf = line;
+        } else {
+          buf = buf ? `${buf}\n${line}` : line;
+        }
+      }
+      if (buf) chunks.push(buf);
 
-      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      await interaction.reply({
+        embeds: [makeEmbed({
+          color: Colors.Blurple,
+          title: `📋 Open Tickets (${open.length})`,
+          description: chunks[0],
+        })],
+        flags: MessageFlags.Ephemeral,
+      });
+      for (let i = 1; i < chunks.length; i++) {
+        await interaction.followUp({
+          embeds: [makeEmbed({
+            color: Colors.Blurple,
+            title: `📋 Open Tickets (cont.)`,
+            description: chunks[i],
+          })],
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      return;
     }
 
     // /qr — send / add / remove / list quick replies
     if (commandName === 'qr') {
       const sub = interaction.options.getSubcommand();
+
+      if ((sub === 'add' || sub === 'remove') && !(await memberCanManageTicketBans(interaction))) {
+        return interaction.reply({
+          content: '❌ Only Admin Team and Management Team can add or remove quick replies.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
 
       if (sub === 'list') {
         const all = qrDb.getAll();
@@ -1515,24 +1973,30 @@ client.on('interactionCreate', async interaction => {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
         const member = interaction.member ?? await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
-        const { dmSent, embedColor, staffDisplay, description } = await sendStaffReplyToUser({
+        const { dmSent, viaFallback, embedColor, staffDisplay, description } = await sendStaffReplyToUser({
           targetUserId: ticket.userId,
           content: qr.message,
           member,
           author: interaction.user,
           contextLabel: `Ticket #${ticket.id}  ·  Next RP`,
+          ticket,
         });
+        db.touchTicketActivity(ticket.id);
 
         const logEmbed = makeEmbed({
           color: embedColor,
           title: `⚡ Quick Reply — ${qr.label}`,
           description,
-          footer: `Sent by ${staffDisplay} · ${dmSent ? 'Delivered ✅' : 'Failed ❌'}`,
+          footer: `Sent by ${staffDisplay} · ${dmSent ? 'Delivered ✅' : viaFallback ? 'Relay ✅' : 'Failed ❌'}`,
         });
         await interaction.channel.send({ embeds: [logEmbed] });
 
         return interaction.editReply({
-          content: dmSent ? `✅ Sent **${qr.label}** to the user.` : '❌ Could not DM the user — they may have DMs disabled.',
+          content: dmSent
+            ? `✅ Sent **${qr.label}** to the user.`
+            : viaFallback
+              ? `✅ Sent **${qr.label}** via ticket relay (DMs closed).`
+              : '❌ Could not DM the user — they may have DMs disabled.',
         });
       }
     }
@@ -1542,6 +2006,9 @@ client.on('interactionCreate', async interaction => {
       qr => qr.id.toLowerCase().replace(/_/g, '') === commandName
     );
     if (legacyQr) {
+      if (!(await memberIsStaff(interaction))) {
+        return interaction.reply({ content: '❌ Staff only.', flags: MessageFlags.Ephemeral });
+      }
       const ticket = await resolveTicketFromChannel(interaction.channel);
       if (!ticket) return interaction.reply({ content: '❌ This is not a ticket channel.', flags: MessageFlags.Ephemeral });
       if (ticket.status === 'closed') return interaction.reply({ content: '❌ This ticket is closed.', flags: MessageFlags.Ephemeral });
@@ -1549,24 +2016,28 @@ client.on('interactionCreate', async interaction => {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       const member = interaction.member ?? await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
-      const { dmSent, embedColor, staffDisplay, description } = await sendStaffReplyToUser({
+      const { dmSent, viaFallback, embedColor, staffDisplay, description } = await sendStaffReplyToUser({
         targetUserId: ticket.userId,
         content: legacyQr.message,
         member,
         author: interaction.user,
         contextLabel: `Ticket #${ticket.id}  ·  Next RP`,
+        ticket,
       });
+      db.touchTicketActivity(ticket.id);
 
       await interaction.channel.send({
         embeds: [makeEmbed({
           color: embedColor,
           title: `⚡ Quick Reply — ${legacyQr.label}`,
           description,
-          footer: `Sent by ${staffDisplay} · ${dmSent ? 'Delivered ✅' : 'Failed ❌'}`,
+          footer: `Sent by ${staffDisplay} · ${dmSent ? 'Delivered ✅' : viaFallback ? 'Relay ✅' : 'Failed ❌'}`,
         })],
       });
 
-      return interaction.editReply({ content: dmSent ? '✅ Sent!' : '❌ Could not DM the user.' });
+      return interaction.editReply({
+        content: dmSent ? '✅ Sent!' : viaFallback ? '✅ Sent via relay.' : '❌ Could not DM the user.',
+      });
     }
 
 
@@ -1574,7 +2045,7 @@ client.on('interactionCreate', async interaction => {
     if (commandName === 'ticketban') {
       const sub = interaction.options.getSubcommand();
 
-      if (!canManageTicketBans(interaction.member)) {
+      if (!(await memberCanManageTicketBans(interaction))) {
         return interaction.reply({
           content: '❌ Only Admin Team and Management Team can manage ticket bans.',
           flags: MessageFlags.Ephemeral,
@@ -2051,29 +2522,66 @@ client.on('interactionCreate', async interaction => {
 
     // Add quick reply button → open modal
     if (interaction.customId === 'qr_add_btn') {
+      if (!(await memberCanManageTicketBans(interaction))) {
+        return interaction.reply({
+          content: '❌ Only Admin Team and Management Team can add quick replies.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
       return interaction.showModal(buildQrAddModal());
     }
 
-    // Open ticket from panel button
+    // Open ticket from panel button → ask for subject
     if (interaction.customId === 'open_ticket_panel') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const modal = new ModalBuilder()
+        .setCustomId('ticket_subject_modal')
+        .setTitle('Open a Ticket');
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('ticket_subject')
+            .setLabel('What do you need help with?')
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder('Briefly describe your issue…')
+            .setRequired(true)
+            .setMaxLength(200)
+        )
+      );
+      return interaction.showModal(modal);
+    }
 
-      const modal_subject = `Support request from ${interaction.user.username}`;
-      const result = await openTicket(interaction.user, modal_subject);
-
-      if (!result.ok) {
-        return interaction.editReply({ content: `❌ ${result.message}` });
+    // Claim ticket from button
+    if (interaction.customId.startsWith('claim_ticket_')) {
+      if (!(await memberIsStaff(interaction))) {
+        return interaction.reply({ content: '❌ Staff only.', flags: MessageFlags.Ephemeral });
       }
-
-      const msg = result.dmSent
-        ? `✅ Ticket opened! Check your DMs.`
-        : `✅ Ticket opened! I couldn't DM you — please enable DMs from server members.`;
-
-      return interaction.editReply({ content: msg });
+      const ticket = await resolveTicketFromChannel(interaction.channel)
+        || db.getTicket(parseInt(interaction.customId.replace('claim_ticket_', ''), 10));
+      if (!ticket) return interaction.reply({ content: '❌ Ticket not found.', flags: MessageFlags.Ephemeral });
+      if (ticket.status === 'closed') return interaction.reply({ content: '❌ Ticket is closed.', flags: MessageFlags.Ephemeral });
+      if (ticket.claimedBy && ticket.claimedBy !== String(interaction.user.id)) {
+        return interaction.reply({
+          content: `⚠️ Already claimed by **${ticket.claimedByTag || ticket.claimedBy}**.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      db.claimTicket(ticket.id, interaction.user.id, interaction.user.tag);
+      await interaction.channel.send({
+        embeds: [makeEmbed({
+          color: Colors.Green,
+          title: '🙋 Ticket Claimed',
+          description: `Claimed by ${interaction.user}`,
+          footer: `Ticket #${ticket.id}`,
+        })],
+      });
+      return interaction.reply({ content: `✅ You claimed ticket **#${ticket.id}**.`, flags: MessageFlags.Ephemeral });
     }
 
     // Close ticket from staff channel button
     if (interaction.customId.startsWith('close_ticket_')) {
+      if (!(await memberIsStaff(interaction))) {
+        return interaction.reply({ content: '❌ Staff only.', flags: MessageFlags.Ephemeral });
+      }
       // Always repair from the live channel first — never trust a stale DB row alone
       const ticket = await resolveTicketFromChannel(interaction.channel)
         || db.getTicket(parseInt(interaction.customId.replace('close_ticket_', ''), 10));
@@ -2091,42 +2599,20 @@ client.on('interactionCreate', async interaction => {
         return interaction.editReply({ content: '❌ Ticket channel not found.' });
       }
 
-      const renamed = await applyTicketChannelStatus(channel, 'closed');
-      if (!renamed) {
-        return interaction.editReply({
-          content: '❌ Could not rename the channel to `closed-…` (Discord rate limit?). Ticket left **open** — try again in a minute.',
-        });
-      }
-
-      db.closeTicket(ticket.id);
-
-      const userEmbed = makeEmbed({
-        color: Colors.Red,
-        title: '🔒 Ticket Closed',
-        description: `Your ticket has been closed.\n\nIf you need further help, open a new ticket.`,
+      const result = await finalizeTicketClose({
+        channel,
+        ticket,
+        closedByTag: interaction.user.tag,
+        via: 'button',
       });
-      await tryDM(ticket.userId, { embeds: [userEmbed] });
-
-      const closeEmbed = makeEmbed({
-        color: Colors.Red,
-        title: '🔒 Ticket Closed',
-        description: `Closed by ${interaction.user.tag} (via button)`,
-        footer: `Ticket #${ticket.id}`,
-      });
-
-      await channel.send({ embeds: [closeEmbed] });
-      try {
-        const closedCat = await getOrCreateCategory(interaction.guild, '🔒 Closed Tickets');
-        await channel.setParent(closedCat.id, { lockPermissions: false });
-      } catch (err) {
-        console.error('Close button move failed:', err.message);
-      }
-
-      return interaction.editReply({ content: '✅ Ticket closed.' });
+      return interaction.editReply({ content: result.message });
     }
   }
   // ── Select menu — department transfer ──────────────────────────────────
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith('transfer_dept_')) {
+    if (!(await memberIsStaff(interaction))) {
+      return interaction.reply({ content: '❌ Staff only.', flags: MessageFlags.Ephemeral });
+    }
     const ticket = await resolveTicketFromChannel(interaction.channel)
       || db.getTicket(parseInt(interaction.customId.replace('transfer_dept_', ''), 10));
 
@@ -2164,7 +2650,7 @@ client.on('interactionCreate', async interaction => {
     // Save department to DB
     db.setTicketDepartment(ticket.id, deptId);
 
-    // Post log in the channel
+    // Post log in the channel (ping destination department)
     const transferEmbed = makeEmbed({
       color: dept.color ?? Colors.Orange,
       title: `${dept.emoji} Ticket Transferred — ${dept.name}`,
@@ -2177,7 +2663,11 @@ client.on('interactionCreate', async interaction => {
       footer: `Ticket #${ticket.id}`,
     });
 
-    await channel.send({ embeds: [transferEmbed] });
+    await channel.send({
+      content: `<@&${dept.roleId}>`,
+      embeds: [transferEmbed],
+      allowedMentions: { roles: [dept.roleId] },
+    });
 
     return interaction.editReply({ content: `✅ Ticket transferred to **${dept.emoji} ${dept.name}**.`, components: [] });
   }
@@ -2200,6 +2690,63 @@ client.on('interactionCreate', async interaction => {
 client.on('messageCreate', async message => {
   try {
   if (message.author.bot) return;
+
+  // ── Main-server ticket relay (DM fallback) ──────────────────────────────
+  if (
+    message.guild
+    && message.guild.id === process.env.MAIN_GUILD_ID
+    && !message.content.startsWith('%')
+  ) {
+    const ticket = db.getTicketByChannel(message.channelId);
+    if (ticket && ticket.fallbackChannelId === message.channelId && ticket.status === 'open') {
+      if (String(message.author.id) !== String(ticket.userId)) return;
+
+      const channel = await resolveTicketChannel(ticket);
+      if (!channel) {
+        return message.reply('⚠️ Staff channel missing — please ping staff in the main server.').catch(() => {});
+      }
+
+      const fwdEmbed = makeEmbed({
+        color: Colors.Blue,
+        description: (message.content || '*(no text — see attachment below)*').slice(0, 4096),
+        footer: `📩 Relay · ${message.author.tag} · Ticket #${ticket.id}`,
+      });
+      fwdEmbed.setAuthor({
+        name: `${message.author.tag} (User · Relay)`,
+        iconURL: message.author.displayAvatarURL(),
+      });
+      const files = filesFromMessage(message);
+      try {
+        let pingContent;
+        let allowedMentions;
+        if (ticket.claimedBy) {
+          pingContent = `<@${ticket.claimedBy}>`;
+          allowedMentions = { users: [String(ticket.claimedBy)] };
+        } else {
+          const dept = ticket.department
+            ? DEPARTMENTS.find(d => d.id === ticket.department)
+            : null;
+          const roleId = dept?.roleId || process.env.DEFAULT_STAFF_ROLE_ID;
+          if (roleId) {
+            pingContent = `<@&${roleId}>`;
+            allowedMentions = { roles: [roleId] };
+          }
+        }
+        await channel.send({
+          content: pingContent,
+          embeds: [fwdEmbed],
+          files: files.length ? files : undefined,
+          allowedMentions,
+        });
+        db.touchTicketActivity(ticket.id);
+        await message.react('✅');
+      } catch (err) {
+        console.error(`Relay forward failed for ticket #${ticket.id}:`, err.message);
+        await message.react('❌').catch(() => {});
+      }
+      return;
+    }
+  }
 
   // ── DM from user → forward to staff ticket channel ──────────────────────
   if (!message.guild) {
@@ -2248,7 +2795,29 @@ client.on('messageCreate', async message => {
     // Forward attachments too
     const files = typeof filesFromMessage === 'function' ? filesFromMessage(message) : [];
     try {
-      await channel.send({ embeds: [fwdEmbed], files: files.length ? files : undefined });
+      let pingContent;
+      let allowedMentions;
+      if (ticket.claimedBy) {
+        pingContent = `<@${ticket.claimedBy}>`;
+        allowedMentions = { users: [String(ticket.claimedBy)] };
+      } else {
+        const dept = ticket.department
+          ? DEPARTMENTS.find(d => d.id === ticket.department)
+          : DEPARTMENTS.find(d => d.id === 'community_assistant');
+        const roleId = dept?.roleId || process.env.DEFAULT_STAFF_ROLE_ID;
+        if (roleId) {
+          pingContent = `<@&${roleId}>`;
+          allowedMentions = { roles: [roleId] };
+        }
+      }
+
+      await channel.send({
+        content: pingContent,
+        embeds: [fwdEmbed],
+        files: files.length ? files : undefined,
+        allowedMentions,
+      });
+      db.touchTicketActivity(ticket.id);
       await message.react('✅');
     } catch (err) {
       console.error(`Failed to forward DM for ticket #${ticket.id}:`, err.message);
@@ -2271,6 +2840,9 @@ client.on('messageCreate', async message => {
     const qrMatch = text.match(/^[\/!]?qr(?:\s+(.*))?$/);
 
     if (qrMatch) {
+      if (!isStaffMember(message.member)) {
+        return message.reply('❌ Staff only.');
+      }
       const args = (qrMatch[1] || '').trim();
       const [action, ...rest] = args.split(/\s+/).filter(Boolean);
       const restJoined = rest.join(' ').trim();
@@ -2282,7 +2854,7 @@ client.on('messageCreate', async message => {
             color: Colors.Green,
             title: '⚡ Quick Replies',
             description: [
-              '**Add a reply**',
+              '**Add a reply** (Admin/Management)',
               '`qr add` — opens a button, then a form',
               '',
               '**Use a reply** (in a ticket channel)',
@@ -2291,16 +2863,19 @@ client.on('messageCreate', async message => {
               '',
               '**Manage**',
               '`qr list`',
-              '`qr remove hello`',
+              '`qr remove hello` (Admin/Management)',
               '',
               '_Slash `/qr` appears after the bot is restarted with the latest update._',
             ].join('\n'),
           })],
-          components: [buildQrAddButtonRow()],
+          components: canManageQuickReplies(message.member) ? [buildQrAddButtonRow()] : [],
         });
       }
 
       if (action === 'add') {
+        if (!canManageQuickReplies(message.member)) {
+          return message.reply('❌ Only Admin/Management can add quick replies.');
+        }
         return message.reply({
           content: 'Click **Add Quick Reply** to open the form:',
           components: [buildQrAddButtonRow()],
@@ -2312,7 +2887,7 @@ client.on('messageCreate', async message => {
         if (!all.length) {
           return message.reply({
             content: 'No quick replies yet. Type `qr add` to create one.',
-            components: [buildQrAddButtonRow()],
+            components: canManageQuickReplies(message.member) ? [buildQrAddButtonRow()] : [],
           });
         }
         const lines = all.map(r => `**${r.label}** (\`${r.id}\`)\n> ${r.message}`);
@@ -2326,6 +2901,9 @@ client.on('messageCreate', async message => {
       }
 
       if (action === 'remove') {
+        if (!canManageQuickReplies(message.member)) {
+          return message.reply('❌ Only Admin/Management can remove quick replies.');
+        }
         if (!restJoined) return message.reply('Usage: `qr remove <id>` — e.g. `qr remove hello`');
         const result = qrDb.remove(restJoined);
         if (!result.ok) return message.reply(`❌ ${result.error}`);
@@ -2342,23 +2920,31 @@ client.on('messageCreate', async message => {
         if (ticket.status === 'closed') return message.reply('❌ Ticket is closed. Use `/reopen` first.');
 
         const member = message.member ?? await message.guild.members.fetch(message.author.id).catch(() => null);
-        const { dmSent, embedColor, staffDisplay, description } = await sendStaffReplyToUser({
+        const { dmSent, viaFallback, embedColor, staffDisplay, description } = await sendStaffReplyToUser({
           targetUserId: ticket.userId,
           content: qr.message,
           member,
           author: message.author,
           contextLabel: `Ticket #${ticket.id}  ·  Next RP`,
+          ticket,
         });
+        db.touchTicketActivity(ticket.id);
 
         await message.channel.send({
           embeds: [makeEmbed({
             color: embedColor,
             title: `⚡ Quick Reply — ${qr.label}`,
             description,
-            footer: `Sent by ${staffDisplay} · ${dmSent ? 'Delivered ✅' : 'Failed ❌'}`,
+            footer: `Sent by ${staffDisplay} · ${dmSent ? 'Delivered ✅' : viaFallback ? 'Relay ✅' : 'Failed ❌'}`,
           })],
         });
-        return message.reply(dmSent ? `✅ Sent **${qr.label}**.` : '❌ Could not DM the user.');
+        return message.reply(
+          dmSent
+            ? `✅ Sent **${qr.label}**.`
+            : viaFallback
+              ? `✅ Sent **${qr.label}** via relay.`
+              : '❌ Could not DM the user.'
+        );
       }
 
       return message.reply('Unknown qr command. Try `qr help`.');
@@ -2385,18 +2971,22 @@ client.on('messageCreate', async message => {
     const targetUserId = ticket ? ticket.userId : application.userId;
     const contextLabel = application ? `APP-${application.id}  ·  Next RP` : `Ticket #${ticket?.id}  ·  Next RP`;
 
-    const { dmSent } = await sendStaffReplyToUser({
+    const { dmSent, viaFallback } = await sendStaffReplyToUser({
       targetUserId,
       content: replyContent || '*(attachment)*',
       member,
       author: message.author,
       contextLabel,
       files,
+      ticket: ticket || null,
     });
+    if (ticket) db.touchTicketActivity(ticket.id);
 
-    await message.react(dmSent ? '✅' : '❌').catch(() => {});
-    if (!dmSent) {
+    await message.react(dmSent || viaFallback ? '✅' : '❌').catch(() => {});
+    if (!dmSent && !viaFallback) {
       await message.reply('⚠️ Could not DM the user — they may have DMs disabled.').catch(() => {});
+    } else if (!dmSent && viaFallback) {
+      await message.reply('📩 Delivered via ticket relay channel (user DMs closed).').catch(() => {});
     }
 
     return;

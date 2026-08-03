@@ -1,153 +1,205 @@
-const fs   = require('fs');
+const fs = require('fs');
 const path = require('path');
 
 const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'applications.json');
+const BAK_PATH = path.join(DATA_DIR, 'applications.json.bak');
+
+let cache = null;
+
+function emptyDb() {
+  return { applications: {}, counter: 0, open: true };
+}
+
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
 function atomicWrite(filePath, contents) {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  ensureDataDir();
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmp, contents);
   fs.renameSync(tmp, filePath);
 }
 
-function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(DB_PATH)) {
-    atomicWrite(DB_PATH, JSON.stringify({ applications: {}, counter: 0, open: true }, null, 2));
-  }
+function normalize(data) {
+  if (!data || typeof data !== 'object') throw new Error('invalid db shape');
+  if (!data.applications || typeof data.applications !== 'object') data.applications = {};
+  if (typeof data.counter !== 'number') data.counter = 0;
+  if (typeof data.open !== 'boolean') data.open = true;
+  return data;
 }
 
-function read() {
-  ensureDataDir();
+function tryParse(file, label) {
+  if (!fs.existsSync(file)) return null;
   try {
-    const data = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
-    if (!data || typeof data !== 'object') throw new Error('invalid db shape');
-    if (!data.applications || typeof data.applications !== 'object') data.applications = {};
-    if (typeof data.counter !== 'number') data.counter = 0;
-    if (typeof data.open !== 'boolean') data.open = true;
-    return data;
+    const raw = fs.readFileSync(file, 'utf8');
+    if (!raw || !raw.trim()) throw new Error('empty file');
+    return normalize(JSON.parse(raw));
   } catch (err) {
-    const bak = `${DB_PATH}.corrupt.${Date.now()}`;
-    try { fs.copyFileSync(DB_PATH, bak); } catch { /* ignore */ }
-    console.error(`applications.json unreadable (${err.message}); starting empty. Backup: ${bak}`);
-    const empty = { applications: {}, counter: 0, open: true };
-    atomicWrite(DB_PATH, JSON.stringify(empty, null, 2));
-    return empty;
+    const corrupt = `${file}.corrupt.${Date.now()}`;
+    try { fs.copyFileSync(file, corrupt); } catch { /* ignore */ }
+    console.error(`${label} unreadable (${err.message}). Kept copy at ${corrupt}`);
+    return null;
   }
 }
 
-function write(data) {
+function appCount(data) {
+  return data?.applications ? Object.keys(data.applications).length : 0;
+}
+
+function score(data) {
+  if (!data) return -1;
+  return (appCount(data) * 1000) + (data.counter || 0);
+}
+
+function readFromDisk() {
+  ensureDataDir();
+  const primary = tryParse(DB_PATH, 'applications.json');
+  const backup = tryParse(BAK_PATH, 'applications.json.bak');
+
+  if (backup && score(backup) > score(primary || emptyDb())) {
+    console.warn('⚠️  Restored applications from .bak (richer than primary)');
+    atomicWrite(DB_PATH, JSON.stringify(backup, null, 2));
+    try { fs.copyFileSync(DB_PATH, BAK_PATH); } catch { /* ignore */ }
+    return backup;
+  }
+
+  if (primary) return primary;
+
+  const empty = emptyDb();
+  atomicWrite(DB_PATH, JSON.stringify(empty, null, 2));
+  try { fs.copyFileSync(DB_PATH, BAK_PATH); } catch { /* ignore */ }
+  return empty;
+}
+
+function getDb() {
+  if (!cache) cache = readFromDisk();
+  return cache;
+}
+
+function persist(data) {
   ensureDataDir();
   atomicWrite(DB_PATH, JSON.stringify(data, null, 2));
+  try { fs.copyFileSync(DB_PATH, BAK_PATH); } catch (err) {
+    console.error('Failed to write applications backup:', err.message);
+  }
+  cache = data;
+}
+
+function mutate(fn) {
+  const data = getDb();
+  const result = fn(data);
+  persist(data);
+  return result;
 }
 
 /** Check if applications are currently open */
 function isOpen() {
-  return read().open === true;
+  return getDb().open === true;
 }
 
 /** Open or close the application system */
 function setOpen(open) {
-  const db = read();
-  db.open = !!open;
-  write(db);
+  return mutate(db => {
+    db.open = !!open;
+  });
 }
 
 /**
  * Create a new application from a fully completed multi-step form.
- * answers shape:
- *   Section 1: ign, dob, country, availability
- *   Section 2: prevExp, whyServer, modVsAdmin, qualities, rpExperience
- *   Section 3: scenarioA, scenarioB, scenarioC, scenarioD, scenarioE
- *   Section 4: rulesFailFear, rulesMetaPower, rulesRdmNlr
  */
 function createApplication(userId, username, answers) {
-  const db = read();
-  db.counter += 1;
-  const id = String(db.counter).padStart(4, '0');
+  return mutate(db => {
+    db.counter += 1;
+    const id = String(db.counter).padStart(4, '0');
 
-  db.applications[id] = {
-    id,
-    userId,
-    username,
-    ...answers,
-    status:      'pending',  // pending | accepted | declined | hold
-    reviewedBy:  null,
-    reviewedAt:  null,
-    messageId:   null,       // set after posting embed
-    submittedAt: new Date().toISOString(),
-  };
+    db.applications[id] = {
+      id,
+      userId,
+      username,
+      ...answers,
+      status: 'pending',
+      reviewedBy: null,
+      reviewedAt: null,
+      messageId: null,
+      submittedAt: new Date().toISOString(),
+    };
 
-  write(db);
-  return db.applications[id];
+    return { ...db.applications[id] };
+  });
 }
 
 /** Attach the Discord channel + message ID to an application */
 function setChannelMessage(appId, channelId, messageId) {
-  const db = read();
-  if (!db.applications[appId]) return null;
-  db.applications[appId].channelId = channelId;
-  db.applications[appId].messageId = messageId;
-  write(db);
-  return db.applications[appId];
+  return mutate(db => {
+    if (!db.applications[appId]) return null;
+    db.applications[appId].channelId = channelId;
+    db.applications[appId].messageId = messageId;
+    return { ...db.applications[appId] };
+  });
 }
 
 /** Attach the Discord message ID to an application */
 function setMessageId(appId, messageId) {
-  const db = read();
-  if (!db.applications[appId]) return null;
-  db.applications[appId].messageId = messageId;
-  write(db);
-  return db.applications[appId];
+  return mutate(db => {
+    if (!db.applications[appId]) return null;
+    db.applications[appId].messageId = messageId;
+    return { ...db.applications[appId] };
+  });
 }
 
 /** Update the status of an application */
 function updateStatus(appId, status, reviewerTag) {
-  const db = read();
-  if (!db.applications[appId]) return null;
-  db.applications[appId].status     = status;
-  db.applications[appId].reviewedBy  = reviewerTag;
-  db.applications[appId].reviewedAt  = new Date().toISOString();
-  write(db);
-  return db.applications[appId];
+  return mutate(db => {
+    if (!db.applications[appId]) return null;
+    db.applications[appId].status = status;
+    db.applications[appId].reviewedBy = reviewerTag;
+    db.applications[appId].reviewedAt = new Date().toISOString();
+    return { ...db.applications[appId] };
+  });
 }
 
 /** Reset an application back to pending (clears reviewer metadata) */
 function reopenApplication(appId) {
-  const db = read();
-  if (!db.applications[appId]) return null;
-  db.applications[appId].status     = 'pending';
-  db.applications[appId].reviewedBy = null;
-  db.applications[appId].reviewedAt = null;
-  write(db);
-  return db.applications[appId];
+  return mutate(db => {
+    if (!db.applications[appId]) return null;
+    db.applications[appId].status = 'pending';
+    db.applications[appId].reviewedBy = null;
+    db.applications[appId].reviewedAt = null;
+    return { ...db.applications[appId] };
+  });
 }
 
 /** Get an application by ID */
 function getApplication(appId) {
-  return read().applications[appId] ?? null;
+  const hit = getDb().applications[appId];
+  return hit ? { ...hit } : null;
 }
 
 /** Get all applications, optionally filtered by status */
 function getAllApplications(status = null) {
-  const all = Object.values(read().applications);
+  const all = Object.values(getDb().applications).map(a => ({ ...a }));
   return status ? all.filter(a => a.status === status) : all;
 }
 
 /** Check if a user already has an active (pending or on-hold) application */
 function hasPendingApplication(userId) {
-  return Object.values(read().applications).some(
+  return Object.values(getDb().applications).some(
     a => a.userId === userId && (a.status === 'pending' || a.status === 'hold')
   );
 }
 
 /** Find an application by its Discord channel ID */
 function getApplicationByChannel(channelId) {
-  return Object.values(read().applications).find(a => a.channelId === channelId) ?? null;
+  const hit = Object.values(getDb().applications).find(a => a.channelId === channelId);
+  return hit ? { ...hit } : null;
+}
+
+function _resetForTests() {
+  cache = null;
 }
 
 module.exports = {
@@ -162,4 +214,5 @@ module.exports = {
   getAllApplications,
   hasPendingApplication,
   getApplicationByChannel,
+  _resetForTests,
 };

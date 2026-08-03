@@ -5,20 +5,16 @@ const path = require('path');
  * Ticket ban list — users who cannot open new tickets.
  *
  * Stored under DATA_DIR as ticket-bans.json (same volume as tickets.json).
+ * In-memory cache + atomic write + rolling .bak.
  */
 
 const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'ticket-bans.json');
+const BAK_PATH = path.join(DATA_DIR, 'ticket-bans.json.bak');
 
-function atomicWrite(filePath, contents) {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, contents);
-  fs.renameSync(tmp, filePath);
-}
+let cache = null;
 
 function emptyDb() {
   return { bans: {} };
@@ -26,43 +22,88 @@ function emptyDb() {
 
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(DB_PATH)) {
-    atomicWrite(DB_PATH, JSON.stringify(emptyDb(), null, 2));
-  }
 }
 
-function read() {
+function atomicWrite(filePath, contents) {
   ensureDataDir();
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, contents);
+  fs.renameSync(tmp, filePath);
+}
+
+function tryParse(file, label) {
+  if (!fs.existsSync(file)) return null;
   try {
-    const data = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+    const raw = fs.readFileSync(file, 'utf8');
+    if (!raw || !raw.trim()) throw new Error('empty file');
+    const data = JSON.parse(raw);
     if (!data || typeof data !== 'object') throw new Error('invalid db shape');
     if (!data.bans || typeof data.bans !== 'object') data.bans = {};
     return data;
   } catch (err) {
-    const bak = `${DB_PATH}.corrupt.${Date.now()}`;
-    try { fs.copyFileSync(DB_PATH, bak); } catch { /* ignore */ }
-    console.error(`ticket-bans.json unreadable (${err.message}); starting empty. Backup: ${bak}`);
-    const empty = emptyDb();
-    atomicWrite(DB_PATH, JSON.stringify(empty, null, 2));
-    return empty;
+    const corrupt = `${file}.corrupt.${Date.now()}`;
+    try { fs.copyFileSync(file, corrupt); } catch { /* ignore */ }
+    console.error(`${label} unreadable (${err.message}). Kept copy at ${corrupt}`);
+    return null;
   }
 }
 
-function write(data) {
+function banCount(data) {
+  return data?.bans ? Object.keys(data.bans).length : 0;
+}
+
+function readFromDisk() {
+  ensureDataDir();
+  const primary = tryParse(DB_PATH, 'ticket-bans.json');
+  const backup = tryParse(BAK_PATH, 'ticket-bans.json.bak');
+
+  if (backup && banCount(backup) > banCount(primary || emptyDb())) {
+    console.warn('⚠️  Restored ticket-bans from .bak (richer than primary)');
+    atomicWrite(DB_PATH, JSON.stringify(backup, null, 2));
+    try { fs.copyFileSync(DB_PATH, BAK_PATH); } catch { /* ignore */ }
+    return backup;
+  }
+
+  if (primary) return primary;
+
+  const empty = emptyDb();
+  atomicWrite(DB_PATH, JSON.stringify(empty, null, 2));
+  try { fs.copyFileSync(DB_PATH, BAK_PATH); } catch { /* ignore */ }
+  return empty;
+}
+
+function getDb() {
+  if (!cache) cache = readFromDisk();
+  return cache;
+}
+
+function persist(data) {
   ensureDataDir();
   atomicWrite(DB_PATH, JSON.stringify(data, null, 2));
+  try { fs.copyFileSync(DB_PATH, BAK_PATH); } catch (err) {
+    console.error('Failed to write ticket-bans backup:', err.message);
+  }
+  cache = data;
+}
+
+function mutate(fn) {
+  const data = getDb();
+  const result = fn(data);
+  persist(data);
+  return result;
 }
 
 /** @returns {boolean} */
 function isBanned(userId) {
   const uid = String(userId);
-  return Boolean(read().bans[uid]);
+  return Boolean(getDb().bans[uid]);
 }
 
 /** @returns {object|null} */
 function getBan(userId) {
   const uid = String(userId);
-  return read().bans[uid] ?? null;
+  const ban = getDb().bans[uid];
+  return ban ? { ...ban } : null;
 }
 
 /**
@@ -70,28 +111,27 @@ function getBan(userId) {
  * @returns {{ ok: boolean, message: string, ban?: object }}
  */
 function banUser(userId, username, reason, bannedBy) {
-  const uid = String(userId);
-  const db = read();
+  return mutate(db => {
+    const uid = String(userId);
+    if (db.bans[uid]) {
+      return {
+        ok: false,
+        message: `**${username || uid}** is already banned from opening tickets.`,
+        ban: { ...db.bans[uid] },
+      };
+    }
 
-  if (db.bans[uid]) {
-    return {
-      ok: false,
-      message: `**${username || uid}** is already banned from opening tickets.`,
-      ban: db.bans[uid],
+    const ban = {
+      userId: uid,
+      username: username || 'unknown',
+      reason: (reason && String(reason).trim()) || 'No reason provided',
+      bannedBy: bannedBy || 'unknown',
+      bannedAt: new Date().toISOString(),
     };
-  }
 
-  const ban = {
-    userId: uid,
-    username: username || 'unknown',
-    reason: (reason && String(reason).trim()) || 'No reason provided',
-    bannedBy: bannedBy || 'unknown',
-    bannedAt: new Date().toISOString(),
-  };
-
-  db.bans[uid] = ban;
-  write(db);
-  return { ok: true, message: `Banned **${ban.username}** from opening tickets.`, ban };
+    db.bans[uid] = ban;
+    return { ok: true, message: `Banned **${ban.username}** from opening tickets.`, ban: { ...ban } };
+  });
 }
 
 /**
@@ -99,30 +139,34 @@ function banUser(userId, username, reason, bannedBy) {
  * @returns {{ ok: boolean, message: string, ban?: object }}
  */
 function unbanUser(userId) {
-  const uid = String(userId);
-  const db = read();
-  const existing = db.bans[uid];
-
-  if (!existing) {
-    return { ok: false, message: `User \`${uid}\` is not banned from tickets.` };
-  }
-
-  delete db.bans[uid];
-  write(db);
-  return {
-    ok: true,
-    message: `Unbanned **${existing.username || uid}** — they can open tickets again.`,
-    ban: existing,
-  };
+  return mutate(db => {
+    const uid = String(userId);
+    const existing = db.bans[uid];
+    if (!existing) {
+      return { ok: false, message: `User \`${uid}\` is not banned from tickets.` };
+    }
+    delete db.bans[uid];
+    return {
+      ok: true,
+      message: `Unbanned **${existing.username || uid}** — they can open tickets again.`,
+      ban: { ...existing },
+    };
+  });
 }
 
 /** @returns {object[]} */
 function listBans() {
-  return Object.values(read().bans).sort((a, b) => {
-    const ta = a.bannedAt ? Date.parse(a.bannedAt) : 0;
-    const tb = b.bannedAt ? Date.parse(b.bannedAt) : 0;
-    return tb - ta;
-  });
+  return Object.values(getDb().bans)
+    .map(b => ({ ...b }))
+    .sort((a, b) => {
+      const ta = a.bannedAt ? Date.parse(a.bannedAt) : 0;
+      const tb = b.bannedAt ? Date.parse(b.bannedAt) : 0;
+      return tb - ta;
+    });
+}
+
+function _resetForTests() {
+  cache = null;
 }
 
 module.exports = {
@@ -131,4 +175,5 @@ module.exports = {
   banUser,
   unbanUser,
   listBans,
+  _resetForTests,
 };

@@ -30,6 +30,18 @@ function buildCommands() {
       .setDescription('List all open tickets (staff only)'),
 
     new SlashCommandBuilder()
+      .setName('claim')
+      .setDescription('Claim the current ticket (staff only — run inside a ticket channel)'),
+
+    new SlashCommandBuilder()
+      .setName('unclaim')
+      .setDescription('Release your claim on the current ticket (staff only)'),
+
+    new SlashCommandBuilder()
+      .setName('stats')
+      .setDescription('Show ticket stats (staff only)'),
+
+    new SlashCommandBuilder()
       .setName('transfer')
       .setDescription('Transfer this ticket to a specific department (staff only — run inside a ticket channel)'),
 
