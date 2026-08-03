@@ -3120,31 +3120,12 @@ client.on('messageCreate', async message => {
     }
 
     if (!message.content.startsWith('%')) {
-      // Internal staff note in a ticket channel — format + keep ticket active
+      // Internal staff chat in a ticket channel — leave as a normal message
       const ticket = await resolveTicketFromChannel(message.channel);
       if (!ticket || ticket.status === 'closed') return;
       if (!message.content.trim() && !message.attachments.size) return;
 
       db.touchTicketActivity(ticket.id);
-      const noteEmbed = makeEmbed({
-        color: 0x95A5A6,
-        description: (message.content || '*(attachment)*').slice(0, 4096),
-        footer: `📝 Staff note · Ticket #${ticket.id} · not sent to user`,
-      });
-      noteEmbed.setAuthor({
-        name: message.member?.displayName || message.author.username,
-        iconURL: message.author.displayAvatarURL(),
-      });
-      const files = filesFromMessage(message);
-      try {
-        await message.delete().catch(() => null);
-        await message.channel.send({
-          embeds: [noteEmbed],
-          files: files.length ? files : undefined,
-        });
-      } catch (err) {
-        console.error('Staff note format failed:', err.message);
-      }
       return;
     }
 

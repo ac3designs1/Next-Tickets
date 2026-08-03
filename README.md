@@ -22,8 +22,8 @@ User receives a DM confirmation from the bot
         │
 User DMsthe bot  ──────────────────────────────▶  Message appears in ticket channel (Staff Server)
                                                           │
-Staff types a normal message  ──────────────────▶  Internal note (user never sees it)
-Staff types  % Hello!          ──────────────────▶  Bot DMs the user "Hello!"
+Staff types a normal message  ──────────────────▶  Stays in channel (user never sees it)
+Staff types  % Hello!          ──────────────────▶  Bot DMs the user "Hello!" (embed)
 ```
 
 ---
@@ -146,8 +146,8 @@ Inside any ticket channel in the **Staff Server**:
 
 | Message | What happens |
 |---------|-------------|
-| `Hello, just checking in` | Internal staff note — reformatted in-channel, user is NOT notified |
-| `%Hello, just checking in` | Bot DMs the user "Hello, just checking in" — user SEES it |
+| `Hello, just checking in` | Normal staff chat in the ticket — user is NOT notified |
+| `%Hello, just checking in` | Bot DMs the user "Hello, just checking in" (styled embed) — user SEES it |
 
 Attachments work with both methods. If DMs are closed, `%` replies go to a private **Ticket Relay** channel on the main server instead.
 
