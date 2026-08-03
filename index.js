@@ -21,6 +21,7 @@ const {
 
 const db      = require('./database');
 const appDb   = require('./applications-db');
+const banDb   = require('./ticket-bans-db');
 const qrDb    = require('./quick-replies-db');
 const { deployCommands } = require('./deploy-commands');
 const {
@@ -40,6 +41,20 @@ const openTicketLocks = new Map();
 const APPLICATIONS_CHANNEL_ID = process.env.APPLICATIONS_CHANNEL_ID || '1527645538244100136';
 // Role that can action (accept/decline) applications
 const APPLICATIONS_ROLE_ID = process.env.APPLICATIONS_ROLE_ID || '1515309451727470794'; // defaults to management role
+
+const MANAGEMENT_DEPT = DEPARTMENTS.find(d => d.id === 'management') || null;
+const ADMIN_DEPT = DEPARTMENTS.find(d => d.id === 'admin') || null;
+const MANAGEMENT_ROLE_ID = MANAGEMENT_DEPT?.roleId || '1515309451727470794';
+const ADMIN_ROLE_ID = ADMIN_DEPT?.roleId || '1515309068200185866';
+
+/** Admin Team, Management Team, or Discord Administrator may manage ticket bans */
+function canManageTicketBans(member) {
+  if (!member) return false;
+  if (member.permissions?.has(PermissionFlagsBits.Administrator)) return true;
+  const roles = member.roles?.cache;
+  if (!roles) return false;
+  return roles.has(MANAGEMENT_ROLE_ID) || roles.has(ADMIN_ROLE_ID);
+}
 
 // In-memory draft store for multi-step application forms: userId → partial answers
 const applicationDrafts = new Map();
@@ -238,7 +253,6 @@ async function getDeptCategory(guild, dept) {
  *  - DEFAULT_STAFF_ROLE_ID (if set and no department): allowed
  */
 function buildPermissionOverwrites(guild, departmentRoleId = null) {
-  const MANAGEMENT_ROLE_ID = '1515309451727470794';
   const allowedPerms = [
     PermissionFlagsBits.ViewChannel,
     PermissionFlagsBits.SendMessages,
@@ -955,6 +969,15 @@ async function openTicket(user, subject) {
   // Wait for boot reconcile so we don't collide with Discord recovery IDs
   await ticketsReady;
 
+  const existingBan = banDb.getBan(uid);
+  if (existingBan) {
+    const reason = existingBan.reason ? ` Reason: ${existingBan.reason}` : '';
+    return {
+      ok: false,
+      message: `You are banned from opening tickets.${reason}`,
+    };
+  }
+
   // Per-user lock against double-clicks creating two tickets
   if (openTicketLocks.has(uid)) {
     return {
@@ -1181,6 +1204,9 @@ client.once('clientReady', async () => {
         '`/close` — Close the ticket and notify the user',
         '`/reopen` — Reopen a closed ticket',
         '`/tickets` — List all currently open tickets',
+        '`/ticketban ban` — Ban a user from opening tickets (Admin/Management)',
+        '`/ticketban unban` — Allow a banned user to open tickets again (Admin/Management)',
+        '`/ticketban list` — List ticket bans (Admin/Management)',
         '',
         '**Main Server Only:**',
         '`/ticket <subject>` — Open a ticket (users)',
@@ -1543,6 +1569,92 @@ client.on('interactionCreate', async interaction => {
       return interaction.editReply({ content: dmSent ? '✅ Sent!' : '❌ Could not DM the user.' });
     }
 
+
+    // /ticketban — ban / unban users from opening tickets (Admin + Management only)
+    if (commandName === 'ticketban') {
+      const sub = interaction.options.getSubcommand();
+
+      if (!canManageTicketBans(interaction.member)) {
+        return interaction.reply({
+          content: '❌ Only Admin Team and Management Team can manage ticket bans.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === 'ban') {
+        const target = interaction.options.getUser('user', true);
+        const reason = interaction.options.getString('reason') || 'No reason provided';
+        const result = banDb.banUser(
+          target.id,
+          target.tag || target.username,
+          reason,
+          interaction.user.tag || interaction.user.username
+        );
+
+        if (!result.ok) {
+          return interaction.reply({ content: `⚠️ ${result.message}`, flags: MessageFlags.Ephemeral });
+        }
+
+        return interaction.reply({
+          content: [
+            `🚫 ${result.message}`,
+            `**User:** ${target} (\`${target.id}\`)`,
+            `**Reason:** ${result.ban.reason}`,
+            `**By:** ${result.ban.bannedBy}`,
+          ].join('\n'),
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === 'unban') {
+        const target = interaction.options.getUser('user');
+        const rawId = interaction.options.getString('userid');
+        const uid = target?.id || (rawId && rawId.trim()) || null;
+
+        if (!uid) {
+          return interaction.reply({
+            content: '❌ Provide a `user` or `userid` to unban.',
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+
+        const result = banDb.unbanUser(uid);
+        if (!result.ok) {
+          return interaction.reply({ content: `⚠️ ${result.message}`, flags: MessageFlags.Ephemeral });
+        }
+
+        const mention = target ? `${target} (\`${uid}\`)` : `\`${uid}\``;
+        return interaction.reply({
+          content: `✅ ${result.message}\n**User:** ${mention}`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === 'list') {
+        const bans = banDb.listBans();
+        if (!bans.length) {
+          return interaction.reply({ content: 'No users are currently banned from opening tickets.', flags: MessageFlags.Ephemeral });
+        }
+
+        const lines = bans.slice(0, 25).map(b => {
+          const when = b.bannedAt
+            ? `<t:${Math.floor(new Date(b.bannedAt).getTime() / 1000)}:R>`
+            : '—';
+          return `• <@${b.userId}> (\`${b.userId}\`) — ${b.reason || 'No reason'} · by ${b.bannedBy || 'unknown'} · ${when}`;
+        });
+
+        const embed = makeEmbed({
+          color: Colors.Red,
+          title: '🚫 Ticket bans',
+          description: lines.join('\n'),
+          footer: bans.length > 25
+            ? `Showing 25 of ${bans.length} bans`
+            : `${bans.length} ban${bans.length === 1 ? '' : 's'}`,
+        });
+
+        return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      }
+    }
 
     // /applications — manage staff applications
     if (commandName === 'applications') {

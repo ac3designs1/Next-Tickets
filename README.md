@@ -131,6 +131,9 @@ The bot will automatically:
 | `/close` | Staff Server (ticket channel) | Staff — closes the ticket |
 | `/reopen` | Staff Server (ticket channel) | Staff — reopens a closed ticket |
 | `/tickets` | Staff Server | Staff — lists all open tickets |
+| `/ticketban ban` | Either | Admin / Management — ban a user from opening tickets |
+| `/ticketban unban` | Either | Admin / Management — lift a ticket ban |
+| `/ticketban list` | Either | Admin / Management — list ticket bans |
 
 ## Staff messaging
 
@@ -164,10 +167,12 @@ ticket-bot/
 ├── index.js            # Main bot logic
 ├── deploy-commands.js  # Run once to register slash commands
 ├── database.js         # JSON-based ticket storage
+├── ticket-bans-db.js   # Users banned from opening tickets
 ├── departments.json    # Department config (names, role IDs, colours)
 ├── .env                # Your secrets (never commit this!)
 ├── .env.example        # Template for .env
 ├── package.json
 └── data/
-    └── tickets.json    # Auto-created — stores all ticket records
+    ├── tickets.json      # Auto-created — stores all ticket records
+    └── ticket-bans.json  # Auto-created — ticket ban list
 ```

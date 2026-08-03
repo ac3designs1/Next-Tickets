@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "deploy": "node deploy-commands.js",
-    "test": "node test-ticket-persistence.js"
+    "test": "node test-ticket-persistence.js && node test-ticket-bans.js"
   },
   "dependencies": {
     "discord.js": "^14.15.3",

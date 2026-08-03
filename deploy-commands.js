@@ -103,6 +103,42 @@ function buildCommands() {
               .setRequired(true)
           )
       ),
+
+    new SlashCommandBuilder()
+      .setName('ticketban')
+      .setDescription('Ban or unban users from opening tickets (Admin & Management only)')
+      .addSubcommand(sub =>
+        sub.setName('ban')
+          .setDescription('Ban a user from opening tickets')
+          .addUserOption(opt =>
+            opt.setName('user')
+              .setDescription('User to ban from tickets')
+              .setRequired(true)
+          )
+          .addStringOption(opt =>
+            opt.setName('reason')
+              .setDescription('Reason for the ban')
+              .setRequired(false)
+          )
+      )
+      .addSubcommand(sub =>
+        sub.setName('unban')
+          .setDescription('Allow a banned user to open tickets again')
+          .addUserOption(opt =>
+            opt.setName('user')
+              .setDescription('User to unban')
+              .setRequired(false)
+          )
+          .addStringOption(opt =>
+            opt.setName('userid')
+              .setDescription('Discord user ID (if they are not in the server)')
+              .setRequired(false)
+          )
+      )
+      .addSubcommand(sub =>
+        sub.setName('list')
+          .setDescription('List users banned from opening tickets')
+      ),
   ];
 
   // Keep one-shot /hello style commands too (from saved replies)
