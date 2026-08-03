@@ -147,7 +147,7 @@ Inside any ticket channel in the **Staff Server**:
 | Message | What happens |
 |---------|-------------|
 | `Hello, just checking in` | Normal staff chat in the ticket — user is NOT notified |
-| `%Hello, just checking in` | Bot DMs the user (styled embed) and logs the send in-channel — user SEES it |
+| `%Hello, just checking in` | Staff message stays in channel (✅); bot DMs the user a styled embed — user SEES it |
 
 Attachments work with both methods. If DMs are closed, `%` replies go to a private **Ticket Relay** channel on the main server instead.
 
