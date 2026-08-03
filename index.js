@@ -3195,7 +3195,7 @@ client.on('messageCreate', async message => {
     const targetUserId = ticket ? ticket.userId : application.userId;
     const contextLabel = application ? `APP-${application.id}  ·  Next RP` : `Ticket #${ticket?.id}  ·  Next RP`;
 
-    const { dmSent, viaFallback, rankLabel, embedColor, staffDisplay, description } = await sendStaffReplyToUser({
+    const { dmSent, viaFallback } = await sendStaffReplyToUser({
       targetUserId,
       content: replyContent || '*(attachment)*',
       member,
@@ -3206,22 +3206,9 @@ client.on('messageCreate', async message => {
     });
     if (ticket) db.touchTicketActivity(ticket.id);
 
-    if (dmSent || viaFallback) {
-      // Replace the raw `%…` message with a clean "sent to user" log (embeds only on outbound)
-      await message.channel.send({
-        embeds: [buildSentToUserLogEmbed({
-          embedColor,
-          staffDisplay,
-          author: message.author,
-          description,
-          deliveryLabel: `${rankLabel} · ${deliveryFooterLabel(dmSent, viaFallback)}`,
-          contextLabel,
-        })],
-        files: files.length ? files : undefined,
-      });
-      await message.delete().catch(() => null);
-    } else {
-      await message.react('❌').catch(() => {});
+    // Keep the staff member's own `%` message so the channel shows who said what
+    await message.react(dmSent || viaFallback ? '✅' : '❌').catch(() => {});
+    if (!dmSent && !viaFallback) {
       const failHint = application
         ? '⚠️ Could not DM the applicant — they may have DMs disabled.'
         : '⚠️ Could not DM the user — they may have DMs disabled.';
