@@ -220,6 +220,12 @@ try {
   // ── claim / subject / activity / reopen guard ────────────────────────────
   const claimed = db.claimTicket(openAlice.id, '999', 'staff#1');
   assert.strictEqual(claimed.claimedBy, '999');
+  const race = db.claimTicket(openAlice.id, '888', 'other#2');
+  assert.strictEqual(race._error, 'claimed');
+  assert.strictEqual(db.getTicket(openAlice.id).claimedBy, '999');
+  const takeover = db.claimTicket(openAlice.id, '888', 'other#2', { force: true });
+  assert.strictEqual(takeover.claimedBy, '888');
+  assert.strictEqual(takeover._takeover, true);
   db.setTicketSubject(openAlice.id, 'Need help');
   assert.strictEqual(db.getTicket(openAlice.id).subject, 'Need help');
   db.touchTicketActivity(openAlice.id);

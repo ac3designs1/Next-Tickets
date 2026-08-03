@@ -63,6 +63,9 @@ MAIN_GUILD_ID=       # ID of your public/main Discord server
 STAFF_GUILD_ID=      # ID of your separate staff-only Discord server
 DEFAULT_STAFF_ROLE_ID=  # Role ID in the STAFF server that sees all unassigned tickets
 TICKET_CATEGORY_NAME=Tickets   # Name of the category to group ticket channels under
+PANEL_CHANNEL_ID=    # Optional — auto-post ticket panel in this main-server channel
+DATA_DIR=./data      # Persistent volume for tickets / bans / apps / quick replies
+STALE_TICKET_DAYS=7  # Auto-close inactive open tickets after N days
 ```
 
 > To get an ID: enable **Developer Mode** in Discord settings, then right-click any server/role and click **Copy ID**.
@@ -143,10 +146,10 @@ Inside any ticket channel in the **Staff Server**:
 
 | Message | What happens |
 |---------|-------------|
-| `Hello, just checking in` | Internal note — **only staff see it**, user is NOT notified |
+| `Hello, just checking in` | Internal staff note — reformatted in-channel, user is NOT notified |
 | `%Hello, just checking in` | Bot DMs the user "Hello, just checking in" — user SEES it |
 
-Attachments work with both methods.
+Attachments work with both methods. If DMs are closed, `%` replies go to a private **Ticket Relay** channel on the main server instead.
 
 ---
 
@@ -155,9 +158,10 @@ Attachments work with both methods.
 Run `/transfer` inside any ticket channel. A dropdown appears with all departments from `departments.json`.
 When you select one:
 
-- The channel's permissions are updated so **only that department's role** can see it
-- All other staff (including the default staff role) lose access
-- A log message is posted in the channel
+- The channel's permissions are updated so **that department's role** can see it
+- **Admin Team** and **Management Team** always keep access
+- Any active claim is cleared so the destination team can `/claim`
+- A log message is posted (and the department role is pinged)
 - The topic is updated to reflect the department
 
 ---

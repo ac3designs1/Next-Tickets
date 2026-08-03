@@ -367,7 +367,14 @@ async function ensureFallbackChannel(ticket) {
 }
 
 /** Shared close flow: rename → transcript → DB close → notify → move */
-async function finalizeTicketClose({ channel, ticket, closedByTag, via = 'command' }) {
+async function finalizeTicketClose({
+  channel,
+  ticket,
+  closedByTag,
+  via = 'command',
+  userMessage = null,
+  notifyUser = true,
+}) {
   const renamed = await applyTicketChannelStatus(channel, 'closed');
   if (!renamed) {
     return {
@@ -390,17 +397,25 @@ async function finalizeTicketClose({ channel, ticket, closedByTag, via = 'comman
   }
 
   db.closeTicket(ticket.id);
+  const closedTicket = { ...ticket, status: 'closed', claimedBy: ticket.claimedBy };
+  await refreshTicketHeaderMessage(channel, closedTicket).catch(() => {});
 
-  const userEmbed = makeEmbed({
-    color: Colors.Red,
-    title: '🔒 Ticket Closed',
-    description: 'Your ticket has been closed by staff.\n\nIf you need further help, open a new ticket.',
-  });
-  const dmSent = await tryDM(ticket.userId, { embeds: [userEmbed] });
-  if (!dmSent && ticket.fallbackChannelId) {
-    const fallback = await client.channels.fetch(ticket.fallbackChannelId).catch(() => null);
-    if (fallback) {
-      await fallback.send({ content: `<@${ticket.userId}>`, embeds: [userEmbed] }).catch(() => {});
+  if (notifyUser) {
+    const userEmbed = makeEmbed({
+      color: via === 'stale' ? Colors.Orange : Colors.Red,
+      title: via === 'stale' ? '🔒 Ticket Auto-Closed' : '🔒 Ticket Closed',
+      description: userMessage || (
+        via === 'stale'
+          ? `Your ticket was closed after **${STALE_TICKET_DAYS} days** without activity.\n\nOpen a new ticket if you still need help.`
+          : 'Your ticket has been closed by staff.\n\nIf you need further help, open a new ticket.'
+      ),
+    });
+    const dmSent = await tryDM(ticket.userId, { embeds: [userEmbed] });
+    if (!dmSent && ticket.fallbackChannelId) {
+      const fallback = await client.channels.fetch(ticket.fallbackChannelId).catch(() => null);
+      if (fallback) {
+        await fallback.send({ content: `<@${ticket.userId}>`, embeds: [userEmbed] }).catch(() => {});
+      }
     }
   }
 
@@ -500,8 +515,8 @@ async function getDeptCategory(guild, dept) {
 /** Build permission overwrites for a ticket channel.
  *  - @everyone: denied
  *  - Bot itself: allowed
- *  - Management role: always allowed (sees everything)
- *  - departmentRoleId (if set): allowed exclusively
+ *  - Management + Admin roles: always allowed (see everything)
+ *  - departmentRoleId (if set): allowed for that department
  *  - DEFAULT_STAFF_ROLE_ID (if set and no department): allowed
  */
 function buildPermissionOverwrites(guild, departmentRoleId = null) {
@@ -537,8 +552,19 @@ function buildPermissionOverwrites(guild, departmentRoleId = null) {
     },
   ];
 
-  if (departmentRoleId && departmentRoleId !== MANAGEMENT_ROLE_ID) {
-    // Locked to a specific department: only that role (+ management above) can see it
+  // Admin Team also always sees every ticket (unless they're the assigned dept already)
+  if (ADMIN_ROLE_ID && ADMIN_ROLE_ID !== MANAGEMENT_ROLE_ID) {
+    overwrites.push({
+      id: ADMIN_ROLE_ID,
+      allow: allowedPerms,
+      type: OverwriteType.Role,
+    });
+  }
+
+  const leadershipIds = new Set([MANAGEMENT_ROLE_ID, ADMIN_ROLE_ID].filter(Boolean));
+
+  if (departmentRoleId && !leadershipIds.has(departmentRoleId)) {
+    // Locked to a specific department: that role (+ Admin/Management) can see it
     overwrites.push({
       id: departmentRoleId,
       allow: allowedPerms,
@@ -554,6 +580,55 @@ function buildPermissionOverwrites(guild, departmentRoleId = null) {
   }
 
   return overwrites;
+}
+
+/** Action row for open tickets: Claim/Unclaim + Close */
+function buildTicketActionRow(ticket, { claimed = false, disabled = false } = {}) {
+  const isClaimed = claimed || Boolean(ticket?.claimedBy);
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(isClaimed ? `unclaim_ticket_${ticket.id}` : `claim_ticket_${ticket.id}`)
+      .setLabel(isClaimed ? 'Unclaim' : 'Claim')
+      .setStyle(isClaimed ? ButtonStyle.Secondary : ButtonStyle.Success)
+      .setEmoji(isClaimed ? '🔓' : '🙋')
+      .setDisabled(disabled),
+    new ButtonBuilder()
+      .setCustomId(`close_ticket_${ticket.id}`)
+      .setLabel('Close Ticket')
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji('🔒')
+      .setDisabled(disabled)
+  );
+}
+
+/** Try to refresh the ticket header message buttons/claim status */
+async function refreshTicketHeaderMessage(channel, ticket) {
+  if (!channel || !ticket) return;
+  try {
+    const recent = await channel.messages.fetch({ limit: 30 });
+    const header = recent.find(m =>
+      m.author.id === client.user.id
+      && m.embeds?.[0]?.title?.includes(`Ticket #${ticket.id}`)
+      && m.components?.length > 0
+    );
+    if (!header) return;
+
+    const embed = EmbedBuilder.from(header.embeds[0]);
+    const claimLine = ticket.claimedBy
+      ? `**Claimed:** <@${ticket.claimedBy}> (${ticket.claimedByTag || 'staff'})`
+      : '**Claimed:** Unclaimed';
+    const oldDesc = embed.data.description || '';
+    const newDesc = oldDesc.replace(/\*\*Claimed:\*\*[^\n]*/i, claimLine);
+    if (newDesc !== oldDesc) embed.setDescription(newDesc);
+
+    const closed = ticket.status === 'closed';
+    await header.edit({
+      embeds: [embed],
+      components: [buildTicketActionRow(ticket, { claimed: Boolean(ticket.claimedBy), disabled: closed })],
+    });
+  } catch (err) {
+    console.error(`Header refresh failed for ticket #${ticket.id}:`, err.message);
+  }
 }
 
 /**
@@ -1271,7 +1346,6 @@ async function openTicket(user, subject) {
   db.setTicketChannel(ticket.id, staffChannel.id);
 
   // Auto-send the hello message to the user
-  const member = staffChannel.guild.members.me;
   const autoEmbed = makeEmbed({
     color: Colors.Blurple,
     description: 'Hey! Thanks for reaching out. A staff member will be with you shortly — please describe your issue in as much detail as possible.',
@@ -1299,18 +1373,7 @@ async function openTicket(user, subject) {
     footer: 'Ticket Bot',
   });
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`claim_ticket_${ticket.id}`)
-      .setLabel('Claim')
-      .setStyle(ButtonStyle.Success)
-      .setEmoji('🙋'),
-    new ButtonBuilder()
-      .setCustomId(`close_ticket_${ticket.id}`)
-      .setLabel('Close Ticket')
-      .setStyle(ButtonStyle.Danger)
-      .setEmoji('🔒')
-  );
+  const row = buildTicketActionRow(ticket, { claimed: false });
 
   const pingRole = caDept?.roleId || process.env.DEFAULT_STAFF_ROLE_ID;
   await staffChannel.send({
@@ -1479,9 +1542,9 @@ client.once('clientReady', async () => {
         '`/qr add` — Add a new quick reply (Admin/Management)',
         '`/qr remove` — Remove a quick reply (Admin/Management)',
         '`/qr list` — List all quick replies',
-        '`/claim` — Claim this ticket',
-        '`/unclaim` — Release your claim',
-        '`/transfer` — Move the ticket to a specific department',
+        '`/claim` — Claim this ticket (Admin/Management can take over)',
+        '`/unclaim` — Release your claim (or Admin/Management force-release)',
+        '`/transfer` — Move the ticket to a specific department (clears claim)',
         '`/close` — Close the ticket (saves a transcript)',
         '`/reopen` — Reopen a closed ticket',
         '`/tickets` — List all currently open tickets',
@@ -1499,6 +1562,8 @@ client.once('clientReady', async () => {
         '> e.g. `%Hello! How can I help you today?`',
         '> Any message **without** `%` is an internal staff note — the user **will not** see it.',
         '> If DMs fail, replies go to a private **Ticket Relay** channel on the main server.',
+        '',
+        `**Auto-close:** inactive open tickets close after **${STALE_TICKET_DAYS} days**.`,
       ].join('\n'),
     });
 
@@ -1522,11 +1587,12 @@ client.once('clientReady', async () => {
       title: '🏢 Departments  —  `/transfer`',
       description: [
         'Use `/transfer` inside a ticket to move it to a department.',
-        'Only that department (and Management) will be able to see the channel.',
+        'That department (plus **Admin** and **Management**) will be able to see the channel.',
+        'Transferring clears any active claim so the new team can claim it.',
         '',
         ...deptLines,
       ].join('\n'),
-      footer: 'Management always has access to all tickets.',
+      footer: 'Admin Team and Management always have access to all tickets.',
     });
 
     await guideChannel.send({ embeds: [commandsEmbed] });
@@ -1555,12 +1621,6 @@ client.once('clientReady', async () => {
           closedByTag: 'Ticket Bot (auto-close)',
           via: 'stale',
         });
-        const userEmbed = makeEmbed({
-          color: Colors.Orange,
-          title: '🔒 Ticket Auto-Closed',
-          description: `Your ticket was closed after **${STALE_TICKET_DAYS} days** without activity.\nOpen a new ticket if you still need help.`,
-        });
-        await tryDM(ticket.userId, { embeds: [userEmbed] });
       }
     } catch (err) {
       console.error('Stale ticket pass failed:', err.message);
@@ -1766,6 +1826,12 @@ client.on('interactionCreate', async interaction => {
           ? await getDeptCategory(interaction.guild, reopenDept)
           : await getUnassignedCategory(interaction.guild);
         await interaction.channel.setParent(reopenCat.id, { lockPermissions: false });
+        const overwrites = buildPermissionOverwrites(
+          interaction.guild,
+          reopenDept?.roleId || null
+        );
+        await interaction.channel.permissionOverwrites.set(overwrites, `Reopened by ${interaction.user.tag}`);
+        await refreshTicketHeaderMessage(interaction.channel, reopenedTicket);
       } catch (err) {
         console.error('Reopen move failed:', err.message);
       }
@@ -1782,22 +1848,45 @@ client.on('interactionCreate', async interaction => {
       if (ticket.status === 'closed') {
         return interaction.reply({ content: '❌ This ticket is closed.', flags: MessageFlags.Ephemeral });
       }
-      if (ticket.claimedBy && ticket.claimedBy !== String(interaction.user.id)) {
+
+      const elevated = await memberCanManageTicketBans(interaction);
+      const alreadyMine = ticket.claimedBy === String(interaction.user.id);
+      if (alreadyMine) {
+        return interaction.reply({ content: '✅ You already have this ticket claimed.', flags: MessageFlags.Ephemeral });
+      }
+
+      if (ticket.claimedBy && !elevated) {
         return interaction.reply({
-          content: `⚠️ Already claimed by **${ticket.claimedByTag || ticket.claimedBy}**. Use \`/unclaim\` first if needed.`,
+          content: `⚠️ Already claimed by **${ticket.claimedByTag || ticket.claimedBy}**. Ask them to \`/unclaim\`, or have Admin/Management take over.`,
           flags: MessageFlags.Ephemeral,
         });
       }
 
-      const updated = db.claimTicket(ticket.id, interaction.user.id, interaction.user.tag);
+      const updated = db.claimTicket(
+        ticket.id,
+        interaction.user.id,
+        interaction.user.tag,
+        { force: Boolean(ticket.claimedBy && elevated) }
+      );
+      if (updated?._error === 'claimed') {
+        return interaction.reply({
+          content: `⚠️ Already claimed by **${updated._previousClaimerTag || updated.claimedByTag}**.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      const takeoverNote = updated._takeover
+        ? `\nTakeover from **${updated._previousClaimerTag || updated._previousClaimer}**.`
+        : '';
       await interaction.channel.send({
         embeds: [makeEmbed({
           color: Colors.Green,
-          title: '🙋 Ticket Claimed',
-          description: `Claimed by ${interaction.user}`,
+          title: updated._takeover ? '🙋 Ticket Claim Takeover' : '🙋 Ticket Claimed',
+          description: `Claimed by ${interaction.user}${takeoverNote}`,
           footer: `Ticket #${ticket.id}`,
         })],
       });
+      await refreshTicketHeaderMessage(interaction.channel, updated);
       return interaction.reply({
         content: `✅ You claimed ticket **#${updated.id}**.`,
         flags: MessageFlags.Ephemeral,
@@ -1823,7 +1912,7 @@ client.on('interactionCreate', async interaction => {
         });
       }
 
-      db.unclaimTicket(ticket.id);
+      const updated = db.unclaimTicket(ticket.id);
       await interaction.channel.send({
         embeds: [makeEmbed({
           color: Colors.Orange,
@@ -1832,6 +1921,7 @@ client.on('interactionCreate', async interaction => {
           footer: `Ticket #${ticket.id}`,
         })],
       });
+      await refreshTicketHeaderMessage(interaction.channel, updated);
       return interaction.reply({ content: '✅ Ticket unclaimed.', flags: MessageFlags.Ephemeral });
     }
 
@@ -2241,6 +2331,9 @@ client.on('interactionCreate', async interaction => {
       if (!ticket) {
         return interaction.reply({ content: '❌ This is not a ticket channel.', flags: MessageFlags.Ephemeral });
       }
+      if (ticket.status === 'closed') {
+        return interaction.reply({ content: '❌ This ticket is closed. Reopen it before transferring.', flags: MessageFlags.Ephemeral });
+      }
 
       const selectMenu = new StringSelectMenuBuilder()
         .setCustomId(`transfer_dept_${ticket.id}`)
@@ -2262,7 +2355,12 @@ client.on('interactionCreate', async interaction => {
         : 'Unassigned';
 
       return interaction.reply({
-        content: `**Transfer Ticket #${ticket.id}**\nCurrently: \`${currentDept}\`\nSelect a department to transfer this ticket to. Only that department's role will be able to see the channel.`,
+        content: [
+          `**Transfer Ticket #${ticket.id}**`,
+          `Currently: \`${currentDept}\``,
+          'Select a department. That department plus **Admin** and **Management** will see the channel.',
+          'Any active claim will be cleared so the new team can claim it.',
+        ].join('\n'),
         components: [row],
         flags: MessageFlags.Ephemeral,
       });
@@ -2559,22 +2657,76 @@ client.on('interactionCreate', async interaction => {
         || db.getTicket(parseInt(interaction.customId.replace('claim_ticket_', ''), 10));
       if (!ticket) return interaction.reply({ content: '❌ Ticket not found.', flags: MessageFlags.Ephemeral });
       if (ticket.status === 'closed') return interaction.reply({ content: '❌ Ticket is closed.', flags: MessageFlags.Ephemeral });
-      if (ticket.claimedBy && ticket.claimedBy !== String(interaction.user.id)) {
+
+      const elevated = await memberCanManageTicketBans(interaction);
+      if (ticket.claimedBy === String(interaction.user.id)) {
+        return interaction.reply({ content: '✅ You already claimed this ticket.', flags: MessageFlags.Ephemeral });
+      }
+      if (ticket.claimedBy && !elevated) {
         return interaction.reply({
           content: `⚠️ Already claimed by **${ticket.claimedByTag || ticket.claimedBy}**.`,
           flags: MessageFlags.Ephemeral,
         });
       }
-      db.claimTicket(ticket.id, interaction.user.id, interaction.user.tag);
+
+      const updated = db.claimTicket(
+        ticket.id,
+        interaction.user.id,
+        interaction.user.tag,
+        { force: Boolean(ticket.claimedBy && elevated) }
+      );
+      if (updated?._error === 'claimed') {
+        return interaction.reply({
+          content: `⚠️ Already claimed by **${updated._previousClaimerTag || updated.claimedByTag}**.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      const takeoverNote = updated._takeover
+        ? `\nTakeover from **${updated._previousClaimerTag || updated._previousClaimer}**.`
+        : '';
       await interaction.channel.send({
         embeds: [makeEmbed({
           color: Colors.Green,
-          title: '🙋 Ticket Claimed',
-          description: `Claimed by ${interaction.user}`,
+          title: updated._takeover ? '🙋 Ticket Claim Takeover' : '🙋 Ticket Claimed',
+          description: `Claimed by ${interaction.user}${takeoverNote}`,
           footer: `Ticket #${ticket.id}`,
         })],
       });
+      await refreshTicketHeaderMessage(interaction.channel, updated);
       return interaction.reply({ content: `✅ You claimed ticket **#${ticket.id}**.`, flags: MessageFlags.Ephemeral });
+    }
+
+    // Unclaim ticket from button
+    if (interaction.customId.startsWith('unclaim_ticket_')) {
+      if (!(await memberIsStaff(interaction))) {
+        return interaction.reply({ content: '❌ Staff only.', flags: MessageFlags.Ephemeral });
+      }
+      const ticket = await resolveTicketFromChannel(interaction.channel)
+        || db.getTicket(parseInt(interaction.customId.replace('unclaim_ticket_', ''), 10));
+      if (!ticket) return interaction.reply({ content: '❌ Ticket not found.', flags: MessageFlags.Ephemeral });
+      if (!ticket.claimedBy) {
+        return interaction.reply({ content: '⚠️ This ticket is not claimed.', flags: MessageFlags.Ephemeral });
+      }
+      const isOwner = ticket.claimedBy === String(interaction.user.id);
+      const elevated = await memberCanManageTicketBans(interaction);
+      if (!isOwner && !elevated) {
+        return interaction.reply({
+          content: '❌ Only the claimer (or Admin/Management) can unclaim.',
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      const updated = db.unclaimTicket(ticket.id);
+      await interaction.channel.send({
+        embeds: [makeEmbed({
+          color: Colors.Orange,
+          title: '🙋 Ticket Unclaimed',
+          description: `Released by ${interaction.user}`,
+          footer: `Ticket #${ticket.id}`,
+        })],
+      });
+      await refreshTicketHeaderMessage(interaction.channel, updated);
+      return interaction.reply({ content: '✅ Ticket unclaimed.', flags: MessageFlags.Ephemeral });
     }
 
     // Close ticket from staff channel button
@@ -2617,6 +2769,9 @@ client.on('interactionCreate', async interaction => {
       || db.getTicket(parseInt(interaction.customId.replace('transfer_dept_', ''), 10));
 
     if (!ticket) return interaction.update({ content: '❌ Ticket not found.', components: [] });
+    if (ticket.status === 'closed') {
+      return interaction.update({ content: '❌ This ticket is closed. Reopen it before transferring.', components: [] });
+    }
 
     const deptId = interaction.values[0];
     const dept = DEPARTMENTS.find(d => d.id === deptId);
@@ -2647,8 +2802,11 @@ client.on('interactionCreate', async interaction => {
     const newTopic = currentTopic.replace(/Dept: .+$/, `Dept: ${dept.name}`);
     await channel.setTopic(newTopic || `${currentTopic} | Dept: ${dept.name}`);
 
-    // Save department to DB
+    // Save department to DB and clear claim so destination team can pick it up
     db.setTicketDepartment(ticket.id, deptId);
+    const hadClaim = Boolean(ticket.claimedBy);
+    if (hadClaim) db.unclaimTicket(ticket.id);
+    const fresh = db.getTicket(ticket.id);
 
     // Post log in the channel (ping destination department)
     const transferEmbed = makeEmbed({
@@ -2657,9 +2815,10 @@ client.on('interactionCreate', async interaction => {
       description: [
         `This ticket has been transferred to **${dept.name}**.`,
         '',
-        `Only members with the <@&${dept.roleId}> role can now see this channel.`,
+        `<@&${dept.roleId}> plus **Admin** and **Management** can see this channel.`,
+        hadClaim ? 'Previous claim was cleared — please `/claim` if you are taking it.' : null,
         `Transferred by ${interaction.user.tag}`,
-      ].join('\n'),
+      ].filter(Boolean).join('\n'),
       footer: `Ticket #${ticket.id}`,
     });
 
@@ -2668,6 +2827,7 @@ client.on('interactionCreate', async interaction => {
       embeds: [transferEmbed],
       allowedMentions: { roles: [dept.roleId] },
     });
+    await refreshTicketHeaderMessage(channel, fresh);
 
     return interaction.editReply({ content: `✅ Ticket transferred to **${dept.emoji} ${dept.name}**.`, components: [] });
   }
@@ -2793,7 +2953,7 @@ client.on('messageCreate', async message => {
     });
 
     // Forward attachments too
-    const files = typeof filesFromMessage === 'function' ? filesFromMessage(message) : [];
+    const files = filesFromMessage(message);
     try {
       let pingContent;
       let allowedMentions;
@@ -2950,7 +3110,34 @@ client.on('messageCreate', async message => {
       return message.reply('Unknown qr command. Try `qr help`.');
     }
 
-    if (!message.content.startsWith('%')) return; // internal note, do nothing
+    if (!message.content.startsWith('%')) {
+      // Internal staff note in a ticket channel — format + keep ticket active
+      const ticket = await resolveTicketFromChannel(message.channel);
+      if (!ticket || ticket.status === 'closed') return;
+      if (!message.content.trim() && !message.attachments.size) return;
+
+      db.touchTicketActivity(ticket.id);
+      const noteEmbed = makeEmbed({
+        color: 0x95A5A6,
+        description: (message.content || '*(attachment)*').slice(0, 4096),
+        footer: `📝 Staff note · Ticket #${ticket.id} · not sent to user`,
+      });
+      noteEmbed.setAuthor({
+        name: message.member?.displayName || message.author.username,
+        iconURL: message.author.displayAvatarURL(),
+      });
+      const files = filesFromMessage(message);
+      try {
+        await message.delete().catch(() => null);
+        await message.channel.send({
+          embeds: [noteEmbed],
+          files: files.length ? files : undefined,
+        });
+      } catch (err) {
+        console.error('Staff note format failed:', err.message);
+      }
+      return;
+    }
 
     const ticket = await resolveTicketFromChannel(message.channel);
     const application = !ticket ? appDb.getApplicationByChannel(message.channelId) : null;
@@ -2962,7 +3149,7 @@ client.on('messageCreate', async message => {
     }
 
     const replyContent = message.content.slice(1).trim();
-    const files = typeof filesFromMessage === 'function' ? filesFromMessage(message) : [];
+    const files = filesFromMessage(message);
     if (!replyContent && !files.length) {
       return message.reply('⚠️ Message is empty after the `%` prefix.');
     }

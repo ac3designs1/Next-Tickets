@@ -269,18 +269,34 @@ function setTicketSubject(ticketId, subject) {
   });
 }
 
-function claimTicket(ticketId, staffId, staffTag) {
+function claimTicket(ticketId, staffId, staffTag, { force = false } = {}) {
   return mutate(db => {
     const key = String(ticketId);
     if (!db.tickets[key]) return null;
     if (db.tickets[key].status !== 'open') {
       return { ...db.tickets[key], _error: 'closed' };
     }
+    const existing = db.tickets[key].claimedBy;
+    if (existing && existing !== String(staffId) && !force) {
+      return {
+        ...db.tickets[key],
+        _error: 'claimed',
+        _previousClaimer: existing,
+        _previousClaimerTag: db.tickets[key].claimedByTag,
+      };
+    }
+    const previousClaimer = existing && existing !== String(staffId) ? existing : null;
+    const previousTag = previousClaimer ? db.tickets[key].claimedByTag : null;
     db.tickets[key].claimedBy = String(staffId);
     db.tickets[key].claimedByTag = staffTag || 'staff';
     db.tickets[key].claimedAt = new Date().toISOString();
     db.tickets[key].lastActivityAt = new Date().toISOString();
-    return { ...db.tickets[key] };
+    return {
+      ...db.tickets[key],
+      _takeover: Boolean(previousClaimer),
+      _previousClaimer: previousClaimer,
+      _previousClaimerTag: previousTag,
+    };
   });
 }
 
