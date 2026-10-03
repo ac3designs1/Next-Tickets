@@ -864,6 +864,7 @@ const APPLICATION_PROFILES = {
     actionPrefix: 'crew',
     commandName: 'crew-applications',
     panelChannelEnv: 'CREW_APPLICATIONS_PANEL_CHANNEL_ID',
+    panelChannelId: '1555749453674315817',
     logChannelId: () => CREW_APPLICATIONS_CHANNEL_ID,
     roleId: () => CREW_APPLICATIONS_ROLE_ID,
     color: 0x57F287,
@@ -1206,8 +1207,12 @@ function memberCanManageApplications(interaction, profile) {
     || interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
 }
 
+function applicationPanelChannelId(profile) {
+  return process.env[profile.panelChannelEnv] || profile.panelChannelId || '';
+}
+
 async function refreshApplicationPanel(profile, open) {
-  const panelChId = process.env[profile.panelChannelEnv];
+  const panelChId = applicationPanelChannelId(profile);
   if (!panelChId) return;
   try {
     const ch = await client.channels.fetch(panelChId);
@@ -2000,7 +2005,7 @@ client.once('clientReady', async () => {
 
   // Auto-post staff and crew application panels
   for (const profile of [STAFF_APP, CREW_APP]) {
-    const appPanelChannelId = process.env[profile.panelChannelEnv];
+    const appPanelChannelId = applicationPanelChannelId(profile);
     if (!appPanelChannelId) continue;
     try {
       const appPanelChannel = await client.channels.fetch(appPanelChannelId);
