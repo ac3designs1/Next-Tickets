@@ -780,32 +780,27 @@ function getAppAnswer(app, field) {
   return '—';
 }
 
-/** Same interview as staff, worded for a crew position. */
-const CREW_QUESTIONS = APP_QUESTIONS.map(q => {
-  if (q.id === 'availability') {
-    return { ...q, label: 'How many hours per week can you realistically dedicate to crew duties?' };
-  }
-  if (q.id === 'prevExp') {
-    return { ...q, label: 'What are your expectations of a crew position?' };
-  }
-  if (q.id === 'whyServer') {
-    return { ...q, label: 'Why do you want to volunteer your time to becoming a member of the crew?' };
-  }
-  if (q.id === 'modVsAdmin') {
-    return { ...q, label: 'Do you have previous moderating, crew, or community management experience? If so, please detail.' };
-  }
-  if (q.id === 'scenarioB') {
-    return { ...q, label: q.label.replace('No other staff are online', 'No other crew members are online') };
-  }
-  return q;
-});
+const CREW_QUESTIONS = [
+  { id: 'leaderName', label: 'Leader Name:', hint: 'The crew leader\'s in-game name' },
+  { id: 'crewName', label: 'Crew Name:', hint: 'The name of the crew' },
+  { id: 'whyStart', label: 'Why they want to start:', hint: '' },
+  { id: 'backstory', label: 'Backstory:', hint: '' },
+  { id: 'orgColour', label: 'Org Colour:', hint: 'e.g. Red, or a hex code like #FF0000' },
+  { id: 'members', label: 'Members:', hint: 'List the members' },
+];
 
-const CREW_ANSWER_FIELDS = APP_ANSWER_FIELDS.map(field => {
-  if (field.id === 'prevExp') return { ...field, title: 'Expectations of a crew position' };
-  if (field.id === 'whyServer') return { ...field, title: 'Why volunteer for the crew?' };
-  if (field.id === 'modVsAdmin') return { ...field, title: 'Previous moderating / crew experience' };
-  return field;
-});
+const CREW_ANSWER_FIELDS = [
+  { id: 'whyStart', title: 'Why they want to start' },
+  { id: 'backstory', title: 'Backstory' },
+  { id: 'members', title: 'Members' },
+];
+
+const CREW_OVERVIEW_FIELDS = [
+  { id: 'leaderName', label: 'Leader Name' },
+  { id: 'crewName', label: 'Crew Name' },
+  { id: 'orgColour', label: 'Org Colour' },
+  { id: 'members', label: 'Members' },
+];
 
 const APPLICATION_PROFILES = {
   staff: {
@@ -878,10 +873,11 @@ const APPLICATION_PROFILES = {
     completeFooter: 'Next RP Crew',
     panelTitleOpen: '👥 Crew Applications',
     panelTitleClosed: '👥 Crew Applications — Closed',
+    overviewFields: CREW_OVERVIEW_FIELDS,
     panelOpenBody: [
-      '**Next RP is looking for dedicated crew members!**',
+      '**Want to start a crew on Next RP?**',
       '',
-      'Click the button below to submit your application.',
+      'Click the button below to submit your crew application.',
       'Our management team will review it and get back to you.',
       '',
       '> Make sure your DMs are open so we can contact you.',
@@ -928,6 +924,7 @@ async function runApplicationInDM(profile, user) {
   const questions = profile.questions;
   const TIMEOUT = 45 * 60 * 1000; // 45 minutes per question
   const total   = questions.length;
+  const sectionCount = new Set(questions.map(q => q.section).filter(Boolean)).size;
 
   await dm.send({ embeds: [
     new EmbedBuilder()
@@ -935,7 +932,9 @@ async function runApplicationInDM(profile, user) {
       .setTitle(profile.dmTitle)
       .setDescription(
         `${profile.welcomeLead}\n\n` +
-        `There are **${total} questions** across 4 sections.\n` +
+        (sectionCount > 1
+          ? `There are **${total} questions** across ${sectionCount} sections.\n`
+          : `There are **${total} questions**.\n`) +
         'Simply send your answer as a message after each question appears.\n\n' +
         '> Type `cancel` at any time to cancel your application.\n' +
         '> You have **45 minutes** to answer each question.'
@@ -951,7 +950,7 @@ async function runApplicationInDM(profile, user) {
 
     // Section header when section changes
     const prevSection = i > 0 ? questions[i - 1].section : null;
-    if (q.section !== prevSection) {
+    if (q.section && q.section !== prevSection) {
       await dm.send({ embeds: [
         new EmbedBuilder()
           .setColor(0x23272A)
@@ -959,13 +958,14 @@ async function runApplicationInDM(profile, user) {
       ]});
     }
 
+    const remaining = `${total - i - 1} question${total - i - 1 !== 1 ? 's' : ''} remaining after this`;
     // Send the question
     await dm.send({ embeds: [
       new EmbedBuilder()
         .setColor(profile.color)
         .setTitle(`Question ${i + 1} of ${total}`)
         .setDescription(`**${q.label}**${q.hint ? `\n\n*${q.hint}*` : ''}`)
-        .setFooter({ text: `${q.section}  ·  ${total - i - 1} question${total - i - 1 !== 1 ? 's' : ''} remaining after this` }),
+        .setFooter({ text: q.section ? `${q.section}  ·  ${remaining}` : remaining }),
     ]});
 
     // Wait for the user's reply
@@ -1082,6 +1082,14 @@ function buildApplicationOverviewEmbed(profile, app, status = 'pending') {
   const ts = Math.floor(new Date(app.submittedAt).getTime() / 1000);
   const trim = (s, n = 256) => String(s ?? '—').slice(0, n);
   const dob = app.dob ?? app.dobTimezone;
+  const detailLines = profile.overviewFields
+    ? profile.overviewFields.map(field => `**${field.label}**   ${trim(getAppAnswer(app, field), 200)}`)
+    : [
+        `**In-Game Name**   ${trim(app.ign, 64)}`,
+        `**Date of Birth**   ${trim(dob, 64)}`,
+        `**Country**   ${trim(app.country, 64)}`,
+        `**Weekly Availability**   ${trim(app.availability, 64)}`,
+      ];
 
   return new EmbedBuilder()
     .setColor(color)
@@ -1091,10 +1099,7 @@ function buildApplicationOverviewEmbed(profile, app, status = 'pending') {
         `### ${label}`,
         ``,
         `**Applicant**   <@${app.userId}>  ·  \`${app.username}\``,
-        `**In-Game Name**   ${trim(app.ign, 64)}`,
-        `**Date of Birth**   ${trim(dob, 64)}`,
-        `**Country**   ${trim(app.country, 64)}`,
-        `**Weekly Availability**   ${trim(app.availability, 64)}`,
+        ...detailLines,
         ``,
         `Submitted <t:${ts}:F>  ·  <t:${ts}:R>`,
         app.reviewedBy ? `Reviewed by **${app.reviewedBy}**` : null,
@@ -1274,7 +1279,8 @@ async function handleApplicationsCommand(interaction, profile) {
 
     const lines = apps.slice(-20).map(a => {
       const ch = a.channelId ? ` · <#${a.channelId}>` : ' · ⚠️ no channel';
-      return `**${applicationTag(profile, a.id)}** · ${a.username} · ${a.ign ?? '—'} · \`${a.status}\`${ch} · <t:${Math.floor(new Date(a.submittedAt).getTime() / 1000)}:R>`;
+      const subject = a.crewName ?? a.ign ?? '—';
+      return `**${applicationTag(profile, a.id)}** · ${a.username} · ${subject} · \`${a.status}\`${ch} · <t:${Math.floor(new Date(a.submittedAt).getTime() / 1000)}:R>`;
     });
 
     const embed = makeEmbed({
