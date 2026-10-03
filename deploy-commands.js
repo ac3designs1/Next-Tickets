@@ -2,6 +2,47 @@ require('dotenv').config();
 const { REST, Routes, SlashCommandBuilder } = require('discord.js');
 const qrDb = require('./quick-replies-db');
 
+function buildApplicationCommand({ name, description, open, close, setup, idExample, reopenExample }) {
+  return new SlashCommandBuilder()
+    .setName(name)
+    .setDescription(description)
+    .addSubcommand(sub => sub.setName('open').setDescription(open))
+    .addSubcommand(sub => sub.setName('close').setDescription(close))
+    .addSubcommand(sub => sub.setName('setup').setDescription(setup))
+    .addSubcommand(sub =>
+      sub.setName('list')
+        .setDescription('List recent applications')
+        .addStringOption(opt =>
+          opt.setName('status')
+            .setDescription('Filter by status')
+            .addChoices(
+              { name: 'Pending',  value: 'pending'  },
+              { name: 'Accepted', value: 'accepted' },
+              { name: 'Declined', value: 'declined' },
+              { name: 'On Hold',  value: 'hold'     },
+            )
+        )
+    )
+    .addSubcommand(sub =>
+      sub.setName('review')
+        .setDescription('Re-post an application (with Accept/Decline buttons) in this channel')
+        .addStringOption(opt =>
+          opt.setName('id')
+            .setDescription(`Application ID, e.g. ${idExample}`)
+            .setRequired(true)
+        )
+    )
+    .addSubcommand(sub =>
+      sub.setName('reopen')
+        .setDescription('Reset an application back to pending so it can be accepted/declined again')
+        .addStringOption(opt =>
+          opt.setName('id')
+            .setDescription(`Application ID, e.g. ${reopenExample}`)
+            .setRequired(true)
+        )
+    );
+}
+
 function buildCommands() {
   const base = [
     new SlashCommandBuilder()
@@ -77,44 +118,24 @@ function buildCommands() {
           .setDescription('List all saved quick replies')
       ),
 
-    new SlashCommandBuilder()
-      .setName('applications')
-      .setDescription('Manage staff applications (management only)')
-      .addSubcommand(sub => sub.setName('open').setDescription('Open staff applications'))
-      .addSubcommand(sub => sub.setName('close').setDescription('Close staff applications — no new submissions accepted'))
-      .addSubcommand(sub => sub.setName('setup').setDescription('Post the "Apply for Staff" panel in this channel'))
-      .addSubcommand(sub =>
-        sub.setName('list')
-          .setDescription('List recent applications')
-          .addStringOption(opt =>
-            opt.setName('status')
-              .setDescription('Filter by status')
-              .addChoices(
-                { name: 'Pending',  value: 'pending'  },
-                { name: 'Accepted', value: 'accepted' },
-                { name: 'Declined', value: 'declined' },
-                { name: 'On Hold',  value: 'hold'     },
-              )
-          )
-      )
-      .addSubcommand(sub =>
-        sub.setName('review')
-          .setDescription('Re-post an application (with Accept/Decline buttons) in this channel')
-          .addStringOption(opt =>
-            opt.setName('id')
-              .setDescription('Application ID, e.g. 0001')
-              .setRequired(true)
-          )
-      )
-      .addSubcommand(sub =>
-        sub.setName('reopen')
-          .setDescription('Reset an application back to pending so it can be accepted/declined again')
-          .addStringOption(opt =>
-            opt.setName('id')
-              .setDescription('Application ID, e.g. 0005')
-              .setRequired(true)
-          )
-      ),
+    buildApplicationCommand({
+      name: 'applications',
+      description: 'Manage staff applications (management only)',
+      open: 'Open staff applications',
+      close: 'Close staff applications — no new submissions accepted',
+      setup: 'Post the "Apply for Staff" panel in this channel',
+      idExample: '0001',
+      reopenExample: '0005',
+    }),
+    buildApplicationCommand({
+      name: 'crew-applications',
+      description: 'Manage crew applications (management only)',
+      open: 'Open crew applications',
+      close: 'Close crew applications — no new submissions accepted',
+      setup: 'Post the "Apply for Crew" panel in this channel',
+      idExample: '0001',
+      reopenExample: '0005',
+    }),
 
     new SlashCommandBuilder()
       .setName('ticketban')

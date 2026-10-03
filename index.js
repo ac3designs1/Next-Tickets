@@ -22,6 +22,7 @@ const {
 
 const db      = require('./database');
 const appDb   = require('./applications-db');
+const crewDb  = require('./applications-db').createApplicationsDb('crew-applications');
 const banDb   = require('./ticket-bans-db');
 const qrDb    = require('./quick-replies-db');
 const { buildAndSaveTranscript } = require('./transcript');
@@ -43,6 +44,9 @@ const openTicketLocks = new Map();
 const APPLICATIONS_CHANNEL_ID = process.env.APPLICATIONS_CHANNEL_ID || '1527645538244100136';
 // Role that can action (accept/decline) applications
 const APPLICATIONS_ROLE_ID = process.env.APPLICATIONS_ROLE_ID || '1515309451727470794'; // defaults to management role
+// Crew applications mirror staff applications, with their own panel, database, and review channels.
+const CREW_APPLICATIONS_CHANNEL_ID = process.env.CREW_APPLICATIONS_CHANNEL_ID || APPLICATIONS_CHANNEL_ID;
+const CREW_APPLICATIONS_ROLE_ID = process.env.CREW_APPLICATIONS_ROLE_ID || APPLICATIONS_ROLE_ID;
 
 const MANAGEMENT_DEPT = DEPARTMENTS.find(d => d.id === 'management') || null;
 const ADMIN_DEPT = DEPARTMENTS.find(d => d.id === 'admin') || null;
@@ -776,25 +780,161 @@ function getAppAnswer(app, field) {
   return '—';
 }
 
+/** Same interview as staff, worded for a crew position. */
+const CREW_QUESTIONS = APP_QUESTIONS.map(q => {
+  if (q.id === 'availability') {
+    return { ...q, label: 'How many hours per week can you realistically dedicate to crew duties?' };
+  }
+  if (q.id === 'prevExp') {
+    return { ...q, label: 'What are your expectations of a crew position?' };
+  }
+  if (q.id === 'whyServer') {
+    return { ...q, label: 'Why do you want to volunteer your time to becoming a member of the crew?' };
+  }
+  if (q.id === 'modVsAdmin') {
+    return { ...q, label: 'Do you have previous moderating, crew, or community management experience? If so, please detail.' };
+  }
+  if (q.id === 'scenarioB') {
+    return { ...q, label: q.label.replace('No other staff are online', 'No other crew members are online') };
+  }
+  return q;
+});
+
+const CREW_ANSWER_FIELDS = APP_ANSWER_FIELDS.map(field => {
+  if (field.id === 'prevExp') return { ...field, title: 'Expectations of a crew position' };
+  if (field.id === 'whyServer') return { ...field, title: 'Why volunteer for the crew?' };
+  if (field.id === 'modVsAdmin') return { ...field, title: 'Previous moderating / crew experience' };
+  return field;
+});
+
+const APPLICATION_PROFILES = {
+  staff: {
+    key: 'staff',
+    db: appDb,
+    questions: APP_QUESTIONS,
+    answerFields: APP_ANSWER_FIELDS,
+    idPrefix: 'APP',
+    channelPrefix: 'app',
+    categoryName: '📋 Staff Applications',
+    panelButtonId: 'apply_staff_panel',
+    actionPrefix: 'app',
+    commandName: 'applications',
+    panelChannelEnv: 'APPLICATIONS_PANEL_CHANNEL_ID',
+    logChannelId: () => APPLICATIONS_CHANNEL_ID,
+    roleId: () => APPLICATIONS_ROLE_ID,
+    color: 0x5865F2,
+    dmTitle: '📋  Next RP — Staff Application',
+    welcomeLead: '**Welcome! You\'re about to complete a staff application.**',
+    applyAgainLabel: 'Apply for Staff',
+    completeFooter: 'Next RP Staff Team',
+    panelTitleOpen: '📋 Staff Applications',
+    panelTitleClosed: '📋 Staff Applications — Closed',
+    panelOpenBody: [
+      '**Next RP is looking for dedicated staff members!**',
+      '',
+      'Click the button below to submit your application.',
+      'Our management team will review it and get back to you.',
+      '',
+      '> Make sure your DMs are open so we can contact you.',
+    ].join('\n'),
+    panelClosedBody: [
+      '**Applications are currently closed.**',
+      '',
+      'We are not accepting new staff applications at this time.',
+      'Check back later or keep an eye on announcements.',
+    ].join('\n'),
+    panelButtonLabel: 'Apply for Staff',
+    overviewKind: 'Staff Application',
+    overviewFooter: 'Next RP  ·  Staff Applications',
+    reviewIntro: roleId => `<@&${roleId}>  —  Staff application ready for review.`,
+    receivedLine: 'Your staff application for **Next RP** has been received and is currently under review.',
+    logTitle: '📋 New Staff Application',
+    logLine: 'has submitted a staff application.',
+    acceptedLine: 'Your staff application for **Next RP** has been accepted.',
+    declinedLine: 'Unfortunately your staff application for **Next RP** was not successful at this time.',
+    holdLine: 'Management is still reviewing your staff application for **Next RP**.',
+    openReply: '✅ Staff applications are now **open**. The panel has been updated.',
+    closeReply: '✅ Staff applications are now **closed**. The panel has been updated.',
+    listTitle: '📋 Applications',
+  },
+  crew: {
+    key: 'crew',
+    db: crewDb,
+    questions: CREW_QUESTIONS,
+    answerFields: CREW_ANSWER_FIELDS,
+    idPrefix: 'CREW',
+    channelPrefix: 'crew',
+    categoryName: '👥 Crew Applications',
+    panelButtonId: 'apply_crew_panel',
+    actionPrefix: 'crew',
+    commandName: 'crew-applications',
+    panelChannelEnv: 'CREW_APPLICATIONS_PANEL_CHANNEL_ID',
+    logChannelId: () => CREW_APPLICATIONS_CHANNEL_ID,
+    roleId: () => CREW_APPLICATIONS_ROLE_ID,
+    color: 0x57F287,
+    dmTitle: '👥  Next RP — Crew Application',
+    welcomeLead: '**Welcome! You\'re about to complete a crew application.**',
+    applyAgainLabel: 'Apply for Crew',
+    completeFooter: 'Next RP Crew',
+    panelTitleOpen: '👥 Crew Applications',
+    panelTitleClosed: '👥 Crew Applications — Closed',
+    panelOpenBody: [
+      '**Next RP is looking for dedicated crew members!**',
+      '',
+      'Click the button below to submit your application.',
+      'Our management team will review it and get back to you.',
+      '',
+      '> Make sure your DMs are open so we can contact you.',
+    ].join('\n'),
+    panelClosedBody: [
+      '**Applications are currently closed.**',
+      '',
+      'We are not accepting new crew applications at this time.',
+      'Check back later or keep an eye on announcements.',
+    ].join('\n'),
+    panelButtonLabel: 'Apply for Crew',
+    overviewKind: 'Crew Application',
+    overviewFooter: 'Next RP  ·  Crew Applications',
+    reviewIntro: roleId => `<@&${roleId}>  —  Crew application ready for review.`,
+    receivedLine: 'Your crew application for **Next RP** has been received and is currently under review.',
+    logTitle: '👥 New Crew Application',
+    logLine: 'has submitted a crew application.',
+    acceptedLine: 'Your crew application for **Next RP** has been accepted.',
+    declinedLine: 'Unfortunately your crew application for **Next RP** was not successful at this time.',
+    holdLine: 'Management is still reviewing your crew application for **Next RP**.',
+    openReply: '✅ Crew applications are now **open**. The panel has been updated.',
+    closeReply: '✅ Crew applications are now **closed**. The panel has been updated.',
+    listTitle: '👥 Crew Applications',
+  },
+};
+
+const STAFF_APP = APPLICATION_PROFILES.staff;
+const CREW_APP = APPLICATION_PROFILES.crew;
+
+function applicationTag(profile, id) {
+  return `${profile.idPrefix}-${id}`;
+}
+
 /**
  * Run the full application as a DM conversation.
  * Returns the completed answers object, or null if cancelled/timed out.
  */
-async function runApplicationInDM(user) {
+async function runApplicationInDM(profile, user) {
   let dm;
   try { dm = await user.createDM(); } catch {
     return null; // DMs disabled
   }
 
+  const questions = profile.questions;
   const TIMEOUT = 45 * 60 * 1000; // 45 minutes per question
-  const total   = APP_QUESTIONS.length;
+  const total   = questions.length;
 
   await dm.send({ embeds: [
     new EmbedBuilder()
-      .setColor(0x5865F2)
-      .setTitle('📋  Next RP — Staff Application')
+      .setColor(profile.color)
+      .setTitle(profile.dmTitle)
       .setDescription(
-        '**Welcome! You\'re about to complete a staff application.**\n\n' +
+        `${profile.welcomeLead}\n\n` +
         `There are **${total} questions** across 4 sections.\n` +
         'Simply send your answer as a message after each question appears.\n\n' +
         '> Type `cancel` at any time to cancel your application.\n' +
@@ -807,10 +947,10 @@ async function runApplicationInDM(user) {
   const answers = {};
 
   for (let i = 0; i < total; i++) {
-    const q = APP_QUESTIONS[i];
+    const q = questions[i];
 
     // Section header when section changes
-    const prevSection = i > 0 ? APP_QUESTIONS[i - 1].section : null;
+    const prevSection = i > 0 ? questions[i - 1].section : null;
     if (q.section !== prevSection) {
       await dm.send({ embeds: [
         new EmbedBuilder()
@@ -822,7 +962,7 @@ async function runApplicationInDM(user) {
     // Send the question
     await dm.send({ embeds: [
       new EmbedBuilder()
-        .setColor(0x5865F2)
+        .setColor(profile.color)
         .setTitle(`Question ${i + 1} of ${total}`)
         .setDescription(`**${q.label}**${q.hint ? `\n\n*${q.hint}*` : ''}`)
         .setFooter({ text: `${q.section}  ·  ${total - i - 1} question${total - i - 1 !== 1 ? 's' : ''} remaining after this` }),
@@ -841,7 +981,7 @@ async function runApplicationInDM(user) {
       await dm.send({ embeds: [makeEmbed({
         color: Colors.Red,
         title: '⏰  Application Timed Out',
-        description: 'Your application has been cancelled due to inactivity.\nClick **Apply for Staff** again whenever you\'re ready.',
+        description: `Your application has been cancelled due to inactivity.\nClick **${profile.applyAgainLabel}** again whenever you're ready.`,
       })]});
       return null;
     }
@@ -852,7 +992,7 @@ async function runApplicationInDM(user) {
       await dm.send({ embeds: [makeEmbed({
         color: Colors.Red,
         title: '❌  Application Cancelled',
-        description: 'Your application has been cancelled.\nYou can click **Apply for Staff** again at any time.',
+        description: `Your application has been cancelled.\nYou can click **${profile.applyAgainLabel}** again at any time.`,
       })]});
       return null;
     }
@@ -870,7 +1010,7 @@ async function runApplicationInDM(user) {
     color: Colors.Green,
     title: '🎉  Application Complete!',
     description: 'All questions answered. Your application has been submitted and will be reviewed by management.\n\n> Make sure your DMs stay open so we can contact you with a decision.',
-    footer: 'Next RP Staff Team',
+    footer: profile.completeFooter,
   })]});
 
   return answers;
@@ -881,58 +1021,45 @@ async function runApplicationInDM(user) {
 // ---------------------------------------------------------------------------
 
 /** Create a dedicated application channel in the staff guild */
-async function createApplicationChannel(app) {
+async function createApplicationChannel(profile, app) {
   const guild = getStaffGuild();
   if (!guild) throw new Error('Staff guild not found');
 
-  const category = await getOrCreateCategory(guild, '📋 Staff Applications');
+  const category = await getOrCreateCategory(guild, profile.categoryName);
+  const roleId = profile.roleId();
 
   const safeName = app.username.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 16) || 'applicant';
-  const channelName = `app-${app.id}-${safeName}`;
+  const channelName = `${profile.channelPrefix}-${app.id}-${safeName}`;
 
   const channel = await guild.channels.create({
     name: channelName,
     type: ChannelType.GuildText,
     parent: category.id,
-    topic: `Application APP-${app.id} | Applicant: ${app.username} (${app.userId}) | Status: pending`,
+    topic: `Application ${applicationTag(profile, app.id)} | Applicant: ${app.username} (${app.userId}) | Status: pending`,
     permissionOverwrites: [
       { id: guild.roles.everyone, deny: [PermissionFlagsBits.ViewChannel], type: OverwriteType.Role },
       { id: client.user.id,       allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages], type: OverwriteType.Member },
-      { id: APPLICATIONS_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory], type: OverwriteType.Role },
+      { id: roleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory], type: OverwriteType.Role },
     ],
   });
 
   return channel;
 }
 
-/** Build the "Apply for Staff" panel message payload */
-function buildApplicationPanelPayload(open = true) {
+/** Build the apply-panel message payload for a staff or crew profile */
+function buildApplicationPanelPayload(profile, open = true) {
   const embed = makeEmbed({
-    color: open ? 0x5865F2 : 0x747F8D,
-    title: open ? '📋 Staff Applications' : '📋 Staff Applications — Closed',
-    description: open
-      ? [
-          '**Next RP is looking for dedicated staff members!**',
-          '',
-          'Click the button below to submit your application.',
-          'Our management team will review it and get back to you.',
-          '',
-          '> Make sure your DMs are open so we can contact you.',
-        ].join('\n')
-      : [
-          '**Applications are currently closed.**',
-          '',
-          'We are not accepting new staff applications at this time.',
-          'Check back later or keep an eye on announcements.',
-        ].join('\n'),
+    color: open ? profile.color : 0x747F8D,
+    title: open ? profile.panelTitleOpen : profile.panelTitleClosed,
+    description: open ? profile.panelOpenBody : profile.panelClosedBody,
     footer: open ? 'Applications are open' : 'Applications are closed',
   });
 
   const button = new ButtonBuilder()
-    .setCustomId('apply_staff_panel')
-    .setLabel(open ? 'Apply for Staff' : 'Applications Closed')
+    .setCustomId(profile.panelButtonId)
+    .setLabel(open ? profile.panelButtonLabel : 'Applications Closed')
     .setStyle(open ? ButtonStyle.Success : ButtonStyle.Secondary)
-    .setEmoji(open ? '📋' : '🔒')
+    .setEmoji(open ? (profile.key === 'crew' ? '👥' : '📋') : '🔒')
     .setDisabled(!open);
 
   const row = new ActionRowBuilder().addComponents(button);
@@ -944,7 +1071,7 @@ function buildApplicationPanelPayload(open = true) {
  * Long answers are posted separately — Discord caps ALL embeds in one message at 6000 chars,
  * so packing every answer into one message was silently failing for detailed applications.
  */
-function buildApplicationOverviewEmbed(app, status = 'pending') {
+function buildApplicationOverviewEmbed(profile, app, status = 'pending') {
   const statusMeta = {
     pending:  { color: 0xFEE75C, label: '⏳  Pending Review'  },
     accepted: { color: 0x57F287, label: '✅  Accepted'         },
@@ -958,7 +1085,7 @@ function buildApplicationOverviewEmbed(app, status = 'pending') {
 
   return new EmbedBuilder()
     .setColor(color)
-    .setTitle(`APP-${app.id}  ·  Staff Application`)
+    .setTitle(`${applicationTag(profile, app.id)}  ·  ${profile.overviewKind}`)
     .setDescription(
       [
         `### ${label}`,
@@ -973,74 +1100,76 @@ function buildApplicationOverviewEmbed(app, status = 'pending') {
         app.reviewedBy ? `Reviewed by **${app.reviewedBy}**` : null,
       ].filter(Boolean).join('\n')
     )
-    .setFooter({ text: 'Next RP  ·  Staff Applications' })
+    .setFooter({ text: profile.overviewFooter })
     .setTimestamp();
 }
 
 /** One embed per answer — stays well under Discord limits even for max-length replies */
-function buildApplicationAnswerEmbeds(app) {
-  return APP_ANSWER_FIELDS.map(field => {
+function buildApplicationAnswerEmbeds(profile, app) {
+  return profile.answerFields.map(field => {
     const answer = String(getAppAnswer(app, field)).slice(0, 4096) || '—';
     return new EmbedBuilder()
       .setColor(0x23272A)
       .setTitle(field.title.slice(0, 256))
       .setDescription(answer)
-      .setFooter({ text: `APP-${app.id}` });
+      .setFooter({ text: applicationTag(profile, app.id) });
   });
 }
 
 /** @deprecated kept for any callers expecting the old multi-embed array */
-function buildApplicationEmbeds(app, status = 'pending') {
-  return [buildApplicationOverviewEmbed(app, status), ...buildApplicationAnswerEmbeds(app)];
+function buildApplicationEmbeds(profile, app, status = 'pending') {
+  return [buildApplicationOverviewEmbed(profile, app, status), ...buildApplicationAnswerEmbeds(profile, app)];
 }
 
 /**
  * Post overview, each answer, then a dedicated action-button message.
  * Buttons are on their own short message so they still appear even if an answer post fails.
  */
-async function postApplicationReviewMessages(appChannel, app) {
+async function postApplicationReviewMessages(profile, appChannel, app) {
   const status = app.status || 'pending';
+  const tag = applicationTag(profile, app.id);
 
   await appChannel.send({
     content: [
-      `<@&${APPLICATIONS_ROLE_ID}>  —  Staff application ready for review.`,
+      profile.reviewIntro(profile.roleId()),
       ``,
       `**Applicant:** <@${app.userId}>`,
-      `**Application ID:** \`APP-${app.id}\``,
+      `**Application ID:** \`${tag}\``,
       `**Status:** \`${status}\``,
       ``,
       `Use the buttons at the bottom of this channel to accept, decline, or place on hold.`,
     ].join('\n'),
   });
 
-  await appChannel.send({ embeds: [buildApplicationOverviewEmbed(app, status)] });
+  await appChannel.send({ embeds: [buildApplicationOverviewEmbed(profile, app, status)] });
 
-  for (const embed of buildApplicationAnswerEmbeds(app)) {
+  for (const embed of buildApplicationAnswerEmbeds(profile, app)) {
     try {
       await appChannel.send({ embeds: [embed] });
     } catch (err) {
-      console.error(`Failed to post answer embed for APP-${app.id}:`, err.message);
+      console.error(`Failed to post answer embed for ${tag}:`, err.message);
       await appChannel.send({
         content: `⚠️ Could not display **${embed.data.title}** (Discord limit). Answer is still saved in the bot database.`,
       }).catch(() => {});
     }
   }
 
-  const buttons = buildApplicationButtons(app.id, status);
+  const buttons = buildApplicationButtons(profile, app.id, status);
   const msg = await appChannel.send({
-    content: `**APP-${app.id}** — Accept, decline, or place this application on hold:`,
+    content: `**${tag}** — Accept, decline, or place this application on hold:`,
     components: [buttons],
   });
-  appDb.setChannelMessage(app.id, appChannel.id, msg.id);
+  profile.db.setChannelMessage(app.id, appChannel.id, msg.id);
   return msg;
 }
 
 /** Build the action row buttons for an application */
-function buildApplicationButtons(appId, status = 'pending') {
+function buildApplicationButtons(profile, appId, status = 'pending') {
+  const prefix = profile.actionPrefix;
   if (status !== 'pending' && status !== 'hold') {
     return new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(`app_noop_${appId}`)
+        .setCustomId(`${prefix}_noop_${appId}`)
         .setLabel('Application Reviewed')
         .setStyle(ButtonStyle.Secondary)
         .setEmoji('🔒')
@@ -1050,21 +1179,368 @@ function buildApplicationButtons(appId, status = 'pending') {
 
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`app_accept_${appId}`)
+      .setCustomId(`${prefix}_accept_${appId}`)
       .setLabel('Accept')
       .setStyle(ButtonStyle.Success)
       .setEmoji('✅'),
     new ButtonBuilder()
-      .setCustomId(`app_decline_${appId}`)
+      .setCustomId(`${prefix}_decline_${appId}`)
       .setLabel('Decline')
       .setStyle(ButtonStyle.Danger)
       .setEmoji('❌'),
     new ButtonBuilder()
-      .setCustomId(`app_hold_${appId}`)
+      .setCustomId(`${prefix}_hold_${appId}`)
       .setLabel('Place on Hold')
       .setStyle(ButtonStyle.Secondary)
       .setEmoji('🕐'),
   );
+}
+
+function memberCanManageApplications(interaction, profile) {
+  return interaction.member?.roles?.cache?.has(profile.roleId())
+    || interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
+}
+
+async function refreshApplicationPanel(profile, open) {
+  const panelChId = process.env[profile.panelChannelEnv];
+  if (!panelChId) return;
+  try {
+    const ch = await client.channels.fetch(panelChId);
+    const msgs = await ch.messages.fetch({ limit: 20 });
+    const panel = msgs.find(m => m.author.id === client.user.id && m.components?.length > 0
+      && m.components[0]?.components?.some(c => c.customId === profile.panelButtonId));
+    if (panel) await panel.edit(buildApplicationPanelPayload(profile, open));
+  } catch { /* panel channel may not exist */ }
+}
+
+function applicationProfileFromCustomId(customId) {
+  for (const profile of [STAFF_APP, CREW_APP]) {
+    if (customId === profile.panelButtonId) return profile;
+    if (
+      customId.startsWith(`${profile.actionPrefix}_accept_`)
+      || customId.startsWith(`${profile.actionPrefix}_decline_`)
+      || customId.startsWith(`${profile.actionPrefix}_hold_`)
+    ) return profile;
+  }
+  return null;
+}
+
+function parseApplicationAction(profile, customId) {
+  const prefixes = [
+    [`${profile.actionPrefix}_accept_`, 'accepted'],
+    [`${profile.actionPrefix}_decline_`, 'declined'],
+    [`${profile.actionPrefix}_hold_`, 'hold'],
+  ];
+  for (const [prefix, action] of prefixes) {
+    if (!customId.startsWith(prefix)) continue;
+    const appId = String(customId.slice(prefix.length) || '').replace(new RegExp(`^${profile.idPrefix}-`, 'i'), '').trim();
+    return { action, appId };
+  }
+  return null;
+}
+
+async function handleApplicationsCommand(interaction, profile) {
+  const sub = interaction.options.getSubcommand();
+  const store = profile.db;
+
+  if (!memberCanManageApplications(interaction, profile)) {
+    return interaction.reply({ content: '❌ You do not have permission to manage applications.', flags: MessageFlags.Ephemeral });
+  }
+
+  if (sub === 'open') {
+    store.setOpen(true);
+    await refreshApplicationPanel(profile, true);
+    return interaction.reply({ content: profile.openReply, flags: MessageFlags.Ephemeral });
+  }
+
+  if (sub === 'close') {
+    store.setOpen(false);
+    await refreshApplicationPanel(profile, false);
+    return interaction.reply({ content: profile.closeReply, flags: MessageFlags.Ephemeral });
+  }
+
+  if (sub === 'setup') {
+    await interaction.channel.send(buildApplicationPanelPayload(profile, store.isOpen()));
+    return interaction.reply({ content: '✅ Applications panel posted!', flags: MessageFlags.Ephemeral });
+  }
+
+  if (sub === 'list') {
+    const statusFilter = interaction.options.getString('status') ?? null;
+    const apps = store.getAllApplications(statusFilter);
+
+    if (!apps.length) {
+      return interaction.reply({ content: `No applications found${statusFilter ? ` with status **${statusFilter}**` : ''}.`, flags: MessageFlags.Ephemeral });
+    }
+
+    const lines = apps.slice(-20).map(a => {
+      const ch = a.channelId ? ` · <#${a.channelId}>` : ' · ⚠️ no channel';
+      return `**${applicationTag(profile, a.id)}** · ${a.username} · ${a.ign ?? '—'} · \`${a.status}\`${ch} · <t:${Math.floor(new Date(a.submittedAt).getTime() / 1000)}:R>`;
+    });
+
+    const embed = makeEmbed({
+      color: profile.color,
+      title: `${profile.listTitle}${statusFilter ? ` — ${statusFilter}` : ''}`,
+      description: lines.join('\n'),
+      footer: `${apps.length} total${statusFilter ? ` · filtered by ${statusFilter}` : ''} · Use /${profile.commandName} review id:<id> to restore buttons`,
+    });
+
+    return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  }
+
+  const idPattern = new RegExp(`^${profile.idPrefix}-`, 'i');
+
+  if (sub === 'review') {
+    const rawId = interaction.options.getString('id', true).replace(idPattern, '').trim();
+    const app = store.getApplication(rawId);
+    if (!app) {
+      return interaction.reply({ content: `❌ Application \`${applicationTag(profile, rawId)}\` not found.`, flags: MessageFlags.Ephemeral });
+    }
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    try {
+      await postApplicationReviewMessages(profile, interaction.channel, app);
+      return interaction.editReply({
+        content: `✅ Re-posted **${applicationTag(profile, app.id)}** (\`${app.status}\`) with answers and action buttons in this channel.`,
+      });
+    } catch (err) {
+      console.error('Failed to re-post application:', err.message);
+      return interaction.editReply({ content: `❌ Failed to re-post: ${err.message}` });
+    }
+  }
+
+  if (sub === 'reopen') {
+    const rawId = interaction.options.getString('id', true).replace(idPattern, '').trim();
+    const app = store.getApplication(rawId);
+    if (!app) {
+      return interaction.reply({ content: `❌ Application \`${applicationTag(profile, rawId)}\` not found.`, flags: MessageFlags.Ephemeral });
+    }
+
+    const previous = app.status;
+    store.reopenApplication(rawId);
+
+    return interaction.reply({
+      content: `✅ **${applicationTag(profile, rawId)}** reopened (was \`${previous}\`). You can Accept / Decline / Hold it again.\nTip: run \`/${profile.commandName} review id:${rawId}\` in the app channel to refresh the buttons.`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+}
+
+async function startApplicationFromPanel(interaction, profile) {
+  const store = profile.db;
+  if (!store.isOpen()) {
+    return interaction.reply({ content: '❌ Applications are currently closed. Check back later!', flags: MessageFlags.Ephemeral });
+  }
+  if (applicationDrafts.has(interaction.user.id)) {
+    return interaction.reply({ content: '❌ You already have an application in progress — check your DMs to continue.', flags: MessageFlags.Ephemeral });
+  }
+  if (store.hasPendingApplication(interaction.user.id)) {
+    const existing = store.getAllApplications().find(
+      a => a.userId === interaction.user.id && (a.status === 'pending' || a.status === 'hold')
+    );
+    const statusLine = existing?.status === 'hold'
+      ? 'Your application is currently **on hold** — management may reach out with questions.'
+      : 'Your application is currently **under review** — you will be notified once a decision is made.';
+    return interaction.reply({
+      embeds: [makeEmbed({
+        color: 0xFEE75C,
+        title: 'You Already Have an Open Application',
+        description: `${statusLine}\n\nYou cannot submit a new application until your current one has been resolved.`,
+        footer: existing ? applicationTag(profile, existing.id) : null,
+      })],
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  try { await interaction.user.createDM(); } catch {
+    return interaction.reply({ content: '❌ I couldn\'t DM you. Please enable DMs from server members and try again.', flags: MessageFlags.Ephemeral });
+  }
+
+  await interaction.reply({ content: '📨  Check your DMs! Your application has started.', flags: MessageFlags.Ephemeral });
+  applicationDrafts.set(interaction.user.id, { inProgress: true, kind: profile.key });
+
+  runApplicationInDM(profile, interaction.user).then(async answers => {
+    applicationDrafts.delete(interaction.user.id);
+    if (!answers) return;
+
+    const app = store.createApplication(interaction.user.id, interaction.user.tag, answers);
+
+    try {
+      const appChannel = await createApplicationChannel(profile, app);
+      await postApplicationReviewMessages(profile, appChannel, app);
+
+      await tryDM(app.userId, {
+        embeds: [makeEmbed({
+          color: profile.color,
+          title: '📋  Application Received',
+          description: [
+            `### Thanks for applying, ${app.username.split('#')[0]}!`,
+            ``,
+            profile.receivedLine,
+            `You will receive a DM here once a decision has been made.`,
+            ``,
+            `> Keep your DMs open so we can reach you.`,
+          ].join('\n'),
+          footer: `${applicationTag(profile, app.id)}  ·  Next RP`,
+        })],
+      });
+
+      const logChannelId = profile.logChannelId();
+      if (logChannelId) {
+        try {
+          const staffGuild = getStaffGuild();
+          const logChannel = staffGuild
+            ? (staffGuild.channels.cache.get(logChannelId) ?? await staffGuild.channels.fetch(logChannelId))
+            : await client.channels.fetch(logChannelId);
+          await logChannel.send({
+            embeds: [makeEmbed({
+              color: profile.color,
+              title: profile.logTitle,
+              description: `**${app.username}** ${profile.logLine}\n\n> View it in <#${appChannel.id}>`,
+              footer: applicationTag(profile, app.id),
+            })],
+          });
+        } catch { /* log channel optional */ }
+      }
+    } catch (err) {
+      console.error('Failed to create application channel:', err.message);
+      try {
+        const logChannelId = profile.logChannelId();
+        if (logChannelId) {
+          const staffGuild = getStaffGuild();
+          const logChannel = staffGuild
+            ? (staffGuild.channels.cache.get(logChannelId) ?? await staffGuild.channels.fetch(logChannelId))
+            : await client.channels.fetch(logChannelId);
+          await logChannel.send({
+            content: `⚠️ **${applicationTag(profile, app.id)}** from **${app.username}** was saved but the review channel failed to post.\nError: \`${err.message}\`\nUse \`/${profile.commandName} list\` to see it — restart/redeploy may be needed to recover the channel.`,
+          });
+        }
+      } catch { /* best effort */ }
+    }
+  }).catch(err => {
+    applicationDrafts.delete(interaction.user.id);
+    console.error('Application DM flow error:', err.message);
+  });
+}
+
+async function handleApplicationDecision(interaction, profile) {
+  if (!memberCanManageApplications(interaction, profile)) {
+    return interaction.reply({ content: '❌ Only management can action applications.', flags: MessageFlags.Ephemeral });
+  }
+
+  await interaction.deferUpdate();
+
+  const parsed = parseApplicationAction(profile, interaction.customId);
+  const action = parsed?.action;
+  const appId = parsed?.appId || '';
+  const store = profile.db;
+  const tag = applicationTag(profile, appId || '?');
+
+  const app = store.getApplication(appId);
+  if (!app) {
+    return interaction.followUp({
+      content: `❌ Application \`${tag}\` not found in the database.`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const currentStatus = String(app.status || 'pending').toLowerCase();
+  if (currentStatus === action) {
+    try {
+      await interaction.message.edit({
+        content: `**${tag}** — already **${action}**${app.reviewedBy ? ` by ${app.reviewedBy}` : ''}`,
+        embeds: [buildApplicationOverviewEmbed(profile, app, action)],
+        components: [buildApplicationButtons(profile, appId, action)],
+      });
+    } catch { /* message may be gone */ }
+    return interaction.followUp({
+      content: `ℹ️ **${tag}** is already marked as **${action}**${app.reviewedBy ? ` by **${app.reviewedBy}**` : ''}. The message has been refreshed.`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const previousStatus = currentStatus;
+  store.updateStatus(appId, action, interaction.user.tag);
+  const updated = store.getApplication(appId);
+
+  const dmContent = {
+    accepted: {
+      color: 0x57F287,
+      title: 'Application Accepted',
+      body: [
+        `### Congratulations, ${updated.username.split('#')[0]}! 🎉`,
+        ``,
+        profile.acceptedLine,
+        `A member of management will be in touch shortly with your next steps.`,
+        ``,
+        `Welcome to the team!`,
+      ].join('\n'),
+    },
+    declined: {
+      color: 0xED4245,
+      title: 'Application Unsuccessful',
+      body: [
+        `### Thank you for applying`,
+        ``,
+        profile.declinedLine,
+        `You are welcome to apply again in the future.`,
+        ``,
+        `We appreciate the time and effort you put into your application.`,
+      ].join('\n'),
+    },
+    hold: {
+      color: 0xEB459E,
+      title: 'Application On Hold',
+      body: [
+        `### Your application has been placed on hold`,
+        ``,
+        profile.holdLine,
+        `They may reach out with further questions — keep an eye on your DMs.`,
+      ].join('\n'),
+    },
+  };
+
+  const { color: dmColor, title: dmTitle, body: dmBody } = dmContent[action] ?? dmContent.declined;
+  await tryDM(updated.userId, {
+    embeds: [makeEmbed({
+      color: dmColor,
+      title: `📋  ${dmTitle}`,
+      description: dmBody,
+      footer: `${applicationTag(profile, appId)}  ·  Next RP`,
+    })],
+  });
+
+  const actionLabel = action === 'accepted' ? '✅ Accepted' : action === 'declined' ? '❌ Declined' : '🕐 On Hold';
+
+  try {
+    await interaction.message.edit({
+      content: `**${applicationTag(profile, appId)}** — **${actionLabel}** by ${interaction.user.tag}`,
+      embeds: [buildApplicationOverviewEmbed(profile, updated, action)],
+      components: [buildApplicationButtons(profile, appId, action)],
+    });
+  } catch (err) {
+    console.error('Failed to update application action message:', err.message);
+  }
+
+  try {
+    if (interaction.channel?.isTextBased?.() && interaction.channel.manageable) {
+      const topic = `Application ${applicationTag(profile, appId)} | Applicant: ${updated.username} (${updated.userId}) | Status: ${action}`;
+      await interaction.channel.setTopic(topic.slice(0, 1024));
+    }
+  } catch { /* topic optional */ }
+
+  const changedNote = (previousStatus !== 'pending' && previousStatus !== action)
+    ? `\n_(was previously \`${previousStatus}\`${app.reviewedBy ? ` by ${app.reviewedBy}` : ''})_`
+    : '';
+
+  return interaction.followUp({
+    embeds: [makeEmbed({
+      color: dmColor,
+      description: `**${applicationTag(profile, appId)}** has been marked as **${actionLabel}**.\nApplicant has been notified via DM.${changedNote}`,
+      footer: `Reviewed by ${interaction.user.tag}`,
+    })],
+    flags: MessageFlags.Ephemeral,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1516,25 +1992,24 @@ client.once('clientReady', async () => {
     }
   }
 
-  // Auto-post the staff applications panel
-  const appPanelChannelId = process.env.APPLICATIONS_PANEL_CHANNEL_ID;
-  if (appPanelChannelId) {
+  // Auto-post staff and crew application panels
+  for (const profile of [STAFF_APP, CREW_APP]) {
+    const appPanelChannelId = process.env[profile.panelChannelEnv];
+    if (!appPanelChannelId) continue;
     try {
       const appPanelChannel = await client.channels.fetch(appPanelChannelId);
-      if (appPanelChannel) {
-        const recent = await appPanelChannel.messages.fetch({ limit: 20 });
-        const existing = recent.find(m => m.author.id === client.user.id && m.components?.length > 0
-          && m.components[0]?.components?.some(c => c.customId === 'apply_staff_panel'));
-        if (existing) {
-          console.log(`ℹ️  Applications panel already exists in #${appPanelChannel.name} — skipping.`);
-        } else {
-          const isOpen = appDb.isOpen();
-          await appPanelChannel.send(buildApplicationPanelPayload(isOpen));
-          console.log(`✅ Applications panel posted in #${appPanelChannel.name}`);
-        }
+      if (!appPanelChannel) continue;
+      const recent = await appPanelChannel.messages.fetch({ limit: 20 });
+      const existing = recent.find(m => m.author.id === client.user.id && m.components?.length > 0
+        && m.components[0]?.components?.some(c => c.customId === profile.panelButtonId));
+      if (existing) {
+        console.log(`ℹ️  ${profile.overviewKind} panel already exists in #${appPanelChannel.name} — skipping.`);
+      } else {
+        await appPanelChannel.send(buildApplicationPanelPayload(profile, profile.db.isOpen()));
+        console.log(`✅ ${profile.overviewKind} panel posted in #${appPanelChannel.name}`);
       }
     } catch (err) {
-      console.error('Failed to post applications panel:', err.message);
+      console.error(`Failed to post ${profile.key} applications panel:`, err.message);
     }
   }
 
@@ -1585,6 +2060,8 @@ client.once('clientReady', async () => {
         '`/ticketban ban` — Ban a user from opening tickets (Admin/Management)',
         '`/ticketban unban` — Allow a banned user to open tickets again (Admin/Management)',
         '`/ticketban list` — List ticket bans (Admin/Management)',
+        '`/applications` — Open, close, or review staff applications (management)',
+        '`/crew-applications` — Open, close, or review crew applications (management)',
         '',
         '**Main Server Only:**',
         '`/ticket <subject>` — Open a ticket (users)',
@@ -2258,112 +2735,10 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // /applications — manage staff applications
-    if (commandName === 'applications') {
-      const sub = interaction.options.getSubcommand();
-
-      // Only the applications role (management) can use this command
-      const isManagement = interaction.member?.roles?.cache?.has(APPLICATIONS_ROLE_ID)
-        || interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
-
-      if (!isManagement) {
-        return interaction.reply({ content: '❌ You do not have permission to manage applications.', flags: MessageFlags.Ephemeral });
-      }
-
-      if (sub === 'open') {
-        appDb.setOpen(true);
-        // Update any panel message if APPLICATIONS_PANEL_CHANNEL_ID is set
-        const panelChId = process.env.APPLICATIONS_PANEL_CHANNEL_ID;
-        if (panelChId) {
-          try {
-            const ch = await client.channels.fetch(panelChId);
-            const msgs = await ch.messages.fetch({ limit: 20 });
-            const panel = msgs.find(m => m.author.id === client.user.id && m.components?.length > 0
-              && m.components[0]?.components?.some(c => c.customId === 'apply_staff_panel'));
-            if (panel) await panel.edit(buildApplicationPanelPayload(true));
-          } catch { /* panel channel may not exist */ }
-        }
-        return interaction.reply({ content: '✅ Staff applications are now **open**. The panel has been updated.', flags: MessageFlags.Ephemeral });
-      }
-
-      if (sub === 'close') {
-        appDb.setOpen(false);
-        const panelChId = process.env.APPLICATIONS_PANEL_CHANNEL_ID;
-        if (panelChId) {
-          try {
-            const ch = await client.channels.fetch(panelChId);
-            const msgs = await ch.messages.fetch({ limit: 20 });
-            const panel = msgs.find(m => m.author.id === client.user.id && m.components?.length > 0
-              && m.components[0]?.components?.some(c => c.customId === 'apply_staff_panel'));
-            if (panel) await panel.edit(buildApplicationPanelPayload(false));
-          } catch { /* panel channel may not exist */ }
-        }
-        return interaction.reply({ content: '✅ Staff applications are now **closed**. The panel has been updated.', flags: MessageFlags.Ephemeral });
-      }
-
-      if (sub === 'setup') {
-        await interaction.channel.send(buildApplicationPanelPayload(appDb.isOpen()));
-        return interaction.reply({ content: '✅ Applications panel posted!', flags: MessageFlags.Ephemeral });
-      }
-
-      if (sub === 'list') {
-        const statusFilter = interaction.options.getString('status') ?? null;
-        const apps = appDb.getAllApplications(statusFilter);
-
-        if (!apps.length) {
-          return interaction.reply({ content: `No applications found${statusFilter ? ` with status **${statusFilter}**` : ''}.`, flags: MessageFlags.Ephemeral });
-        }
-
-        const lines = apps.slice(-20).map(a => {
-          const ch = a.channelId ? ` · <#${a.channelId}>` : ' · ⚠️ no channel';
-          return `**APP-${a.id}** · ${a.username} · ${a.ign ?? '—'} · \`${a.status}\`${ch} · <t:${Math.floor(new Date(a.submittedAt).getTime() / 1000)}:R>`;
-        });
-
-        const embed = makeEmbed({
-          color: 0x5865F2,
-          title: `📋 Applications${statusFilter ? ` — ${statusFilter}` : ''}`,
-          description: lines.join('\n'),
-          footer: `${apps.length} total${statusFilter ? ` · filtered by ${statusFilter}` : ''} · Use /applications review id:<id> to restore buttons`,
-        });
-
-        return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
-      }
-
-      if (sub === 'review') {
-        const rawId = interaction.options.getString('id', true).replace(/^APP-/i, '').trim();
-        const app = appDb.getApplication(rawId);
-        if (!app) {
-          return interaction.reply({ content: `❌ Application \`APP-${rawId}\` not found.`, flags: MessageFlags.Ephemeral });
-        }
-
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-        try {
-          await postApplicationReviewMessages(interaction.channel, app);
-          return interaction.editReply({
-            content: `✅ Re-posted **APP-${app.id}** (\`${app.status}\`) with answers and action buttons in this channel.`,
-          });
-        } catch (err) {
-          console.error('Failed to re-post application:', err.message);
-          return interaction.editReply({ content: `❌ Failed to re-post: ${err.message}` });
-        }
-      }
-
-      if (sub === 'reopen') {
-        const rawId = interaction.options.getString('id', true).replace(/^APP-/i, '').trim();
-        const app = appDb.getApplication(rawId);
-        if (!app) {
-          return interaction.reply({ content: `❌ Application \`APP-${rawId}\` not found.`, flags: MessageFlags.Ephemeral });
-        }
-
-        const previous = app.status;
-        appDb.reopenApplication(rawId);
-
-        return interaction.reply({
-          content: `✅ **APP-${rawId}** reopened (was \`${previous}\`). You can Accept / Decline / Hold it again.\nTip: run \`/applications review id:${rawId}\` in the app channel to refresh the buttons.`,
-          flags: MessageFlags.Ephemeral,
-        });
-      }
+    // /applications and /crew-applications
+    if (commandName === 'applications' || commandName === 'crew-applications') {
+      const profile = commandName === 'crew-applications' ? CREW_APP : STAFF_APP;
+      return handleApplicationsCommand(interaction, profile);
     }
 
     // /transfer — move ticket to a department
@@ -2411,253 +2786,13 @@ client.on('interactionCreate', async interaction => {
 
   // ── Button interactions ──────────────────────────────────────────────────
   if (interaction.isButton()) {
-    // ── Apply for Staff panel button — starts DM question flow ──────────
-    if (interaction.customId === 'apply_staff_panel') {
-      if (!appDb.isOpen()) {
-        return interaction.reply({ content: '❌ Applications are currently closed. Check back later!', flags: MessageFlags.Ephemeral });
-      }
-      if (applicationDrafts.has(interaction.user.id)) {
-        return interaction.reply({ content: '❌ You already have an application in progress — check your DMs to continue.', flags: MessageFlags.Ephemeral });
-      }
-      if (appDb.hasPendingApplication(interaction.user.id)) {
-        const existing = appDb.getAllApplications().find(
-          a => a.userId === interaction.user.id && (a.status === 'pending' || a.status === 'hold')
-        );
-        const statusLine = existing?.status === 'hold'
-          ? 'Your application is currently **on hold** — management may reach out with questions.'
-          : 'Your application is currently **under review** — you will be notified once a decision is made.';
-        return interaction.reply({
-          embeds: [makeEmbed({
-            color: 0xFEE75C,
-            title: 'You Already Have an Open Application',
-            description: `${statusLine}\n\nYou cannot submit a new application until your current one has been resolved.`,
-            footer: existing ? `APP-${existing.id}` : null,
-          })],
-          flags: MessageFlags.Ephemeral,
-        });
-      }
-
-      // Test DMs are open before starting
-      let dmTest;
-      try { dmTest = await interaction.user.createDM(); } catch {
-        return interaction.reply({ content: '❌ I couldn\'t DM you. Please enable DMs from server members and try again.', flags: MessageFlags.Ephemeral });
-      }
-
-      // Acknowledge immediately so Discord doesn't show a timeout
-      await interaction.reply({ content: '📨  Check your DMs! Your application has started.', flags: MessageFlags.Ephemeral });
-
-      // Mark as in-progress
-      applicationDrafts.set(interaction.user.id, { inProgress: true });
-
-      // Run the DM flow (non-blocking)
-      runApplicationInDM(interaction.user).then(async answers => {
-        applicationDrafts.delete(interaction.user.id);
-        if (!answers) return; // cancelled or timed out
-
-        const app = appDb.createApplication(interaction.user.id, interaction.user.tag, answers);
-
-        try {
-          // Create a dedicated channel for this application
-          const appChannel = await createApplicationChannel(app);
-
-          // Overview + each answer + action buttons (buttons are always posted last)
-          await postApplicationReviewMessages(appChannel, app);
-
-          // DM the applicant — confirm receipt
-          await tryDM(app.userId, {
-            embeds: [makeEmbed({
-              color: 0x5865F2,
-              title: '📋  Application Received',
-              description: [
-                `### Thanks for applying, ${app.username.split('#')[0]}!`,
-                ``,
-                `Your staff application for **Next RP** has been received and is currently under review.`,
-                `You will receive a DM here once a decision has been made.`,
-                ``,
-                `> Keep your DMs open so we can reach you.`,
-              ].join('\n'),
-              footer: `APP-${app.id}  ·  Next RP`,
-            })],
-          });
-
-          // Also ping the log channel if configured
-          if (APPLICATIONS_CHANNEL_ID) {
-            try {
-              const staffGuild = getStaffGuild();
-              const logChannel = staffGuild
-                ? (staffGuild.channels.cache.get(APPLICATIONS_CHANNEL_ID) ?? await staffGuild.channels.fetch(APPLICATIONS_CHANNEL_ID))
-                : await client.channels.fetch(APPLICATIONS_CHANNEL_ID);
-              await logChannel.send({
-                embeds: [makeEmbed({
-                  color: 0x5865F2,
-                  title: '📋 New Staff Application',
-                  description: `**${app.username}** has submitted a staff application.\n\n> View it in <#${appChannel.id}>`,
-                  footer: `APP-${app.id}`,
-                })],
-              });
-            } catch { /* log channel optional */ }
-          }
-        } catch (err) {
-          console.error('Failed to create application channel:', err.message);
-          // Application is already saved — try to notify management via log channel
-          try {
-            if (APPLICATIONS_CHANNEL_ID) {
-              const staffGuild = getStaffGuild();
-              const logChannel = staffGuild
-                ? (staffGuild.channels.cache.get(APPLICATIONS_CHANNEL_ID) ?? await staffGuild.channels.fetch(APPLICATIONS_CHANNEL_ID))
-                : await client.channels.fetch(APPLICATIONS_CHANNEL_ID);
-              await logChannel.send({
-                content: `⚠️ **APP-${app.id}** from **${app.username}** was saved but the review channel failed to post.\nError: \`${err.message}\`\nUse \`/applications list\` to see it — restart/redeploy may be needed to recover the channel.`,
-              });
-            }
-          } catch { /* best effort */ }
-        }
-      }).catch(err => {
-        applicationDrafts.delete(interaction.user.id);
-        console.error('Application DM flow error:', err.message);
-      });
-
-      return;
+    // Staff and crew application panel plus review buttons
+    const appProfile = applicationProfileFromCustomId(interaction.customId);
+    if (appProfile && interaction.customId === appProfile.panelButtonId) {
+      return startApplicationFromPanel(interaction, appProfile);
     }
-
-    // ── Application Accept / Decline / Hold buttons ─────────────────────
-    if (interaction.customId.startsWith('app_accept_') ||
-        interaction.customId.startsWith('app_decline_') ||
-        interaction.customId.startsWith('app_hold_')) {
-
-      // Only the applications management role can action these
-      const isManagement = interaction.member?.roles?.cache?.has(APPLICATIONS_ROLE_ID)
-        || interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
-
-      if (!isManagement) {
-        return interaction.reply({ content: '❌ Only management can action applications.', flags: MessageFlags.Ephemeral });
-      }
-
-      await interaction.deferUpdate();
-
-      let action, appId;
-      // Parse from the end so IDs like 0005 stay exact (avoid fragile replace collisions)
-      if (interaction.customId.startsWith('app_accept_')) {
-        action = 'accepted';
-        appId = interaction.customId.slice('app_accept_'.length);
-      } else if (interaction.customId.startsWith('app_decline_')) {
-        action = 'declined';
-        appId = interaction.customId.slice('app_decline_'.length);
-      } else {
-        action = 'hold';
-        appId = interaction.customId.slice('app_hold_'.length);
-      }
-      appId = String(appId || '').replace(/^APP-/i, '').trim();
-
-      const app = appDb.getApplication(appId);
-      if (!app) {
-        return interaction.followUp({
-          content: `❌ Application \`APP-${appId || '?'}\` not found in the database.`,
-          flags: MessageFlags.Ephemeral,
-        });
-      }
-
-      // Treat missing/unknown status as still open. Allow management to change a prior
-      // decision too — older builds updated the DB but left Accept/Decline looking pending.
-      const currentStatus = String(app.status || 'pending').toLowerCase();
-      if (currentStatus === action) {
-        try {
-          await interaction.message.edit({
-            content: `**APP-${appId}** — already **${action}**${app.reviewedBy ? ` by ${app.reviewedBy}` : ''}`,
-            embeds: [buildApplicationOverviewEmbed(app, action)],
-            components: [buildApplicationButtons(appId, action)],
-          });
-        } catch { /* message may be gone */ }
-        return interaction.followUp({
-          content: `ℹ️ **APP-${appId}** is already marked as **${action}**${app.reviewedBy ? ` by **${app.reviewedBy}**` : ''}. The message has been refreshed.`,
-          flags: MessageFlags.Ephemeral,
-        });
-      }
-
-      const previousStatus = currentStatus;
-      appDb.updateStatus(appId, action, interaction.user.tag);
-      const updated = appDb.getApplication(appId);
-      // DM the applicant
-      const dmContent = {
-        accepted: {
-          color: 0x57F287,
-          title: 'Application Accepted',
-          body: [
-            `### Congratulations, ${updated.username.split('#')[0]}! 🎉`,
-            ``,
-            `Your staff application for **Next RP** has been accepted.`,
-            `A member of management will be in touch shortly with your next steps.`,
-            ``,
-            `Welcome to the team!`,
-          ].join('\n'),
-        },
-        declined: {
-          color: 0xED4245,
-          title: 'Application Unsuccessful',
-          body: [
-            `### Thank you for applying`,
-            ``,
-            `Unfortunately your staff application for **Next RP** was not successful at this time.`,
-            `You are welcome to apply again in the future.`,
-            ``,
-            `We appreciate the time and effort you put into your application.`,
-          ].join('\n'),
-        },
-        hold: {
-          color: 0xEB459E,
-          title: 'Application On Hold',
-          body: [
-            `### Your application has been placed on hold`,
-            ``,
-            `Management is still reviewing your staff application for **Next RP**.`,
-            `They may reach out with further questions — keep an eye on your DMs.`,
-          ].join('\n'),
-        },
-      };
-
-      const { color: dmColor, title: dmTitle, body: dmBody } = dmContent[action] ?? dmContent.declined;
-      const dmEmbed = makeEmbed({
-        color: dmColor,
-        title: `📋  ${dmTitle}`,
-        description: dmBody,
-        footer: `APP-${appId}  ·  Next RP`,
-      });
-
-      await tryDM(updated.userId, { embeds: [dmEmbed] });
-
-      const actionLabel = action === 'accepted' ? '✅ Accepted' : action === 'declined' ? '❌ Declined' : '🕐 On Hold';
-
-      // Always refresh the button message so Discord matches the database
-      try {
-        await interaction.message.edit({
-          content: `**APP-${appId}** — **${actionLabel}** by ${interaction.user.tag}`,
-          embeds: [buildApplicationOverviewEmbed(updated, action)],
-          components: [buildApplicationButtons(appId, action)],
-        });
-      } catch (err) {
-        console.error('Failed to update application action message:', err.message);
-      }
-
-      // Reflect status on the channel topic so it stays visible while pending/hold
-      try {
-        if (interaction.channel?.isTextBased?.() && interaction.channel.manageable) {
-          const topic = `Application APP-${appId} | Applicant: ${updated.username} (${updated.userId}) | Status: ${action}`;
-          await interaction.channel.setTopic(topic.slice(0, 1024));
-        }
-      } catch { /* topic optional */ }
-
-      const changedNote = (previousStatus !== 'pending' && previousStatus !== action)
-        ? `\n_(was previously \`${previousStatus}\`${app.reviewedBy ? ` by ${app.reviewedBy}` : ''})_`
-        : '';
-
-      return interaction.followUp({
-        embeds: [makeEmbed({
-          color: dmColor,
-          description: `**APP-${appId}** has been marked as **${actionLabel}**.\nApplicant has been notified via DM.${changedNote}`,
-          footer: `Reviewed by ${interaction.user.tag}`,
-        })],
-        flags: MessageFlags.Ephemeral,
-      });
+    if (appProfile) {
+      return handleApplicationDecision(interaction, appProfile);
     }
 
     // Add quick reply button → open modal
